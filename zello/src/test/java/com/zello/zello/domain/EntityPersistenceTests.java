@@ -3,6 +3,7 @@ package com.zello.zello.domain;
 import com.zello.zello.domain.github.GitHubAccount;
 import com.zello.zello.domain.user.User;
 import com.zello.zello.domain.project.Project;
+import com.zello.zello.domain.project.ProjectMember;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -74,6 +75,19 @@ class EntityPersistenceTests {
 
     private Project project() {
         return persist(Project.builder().ownerUser(user()).name("Project").build());
+    }
+
+    @Test
+    void persistsProjectMember() {
+        ProjectMember value = member(project(), user());
+        entityManager.clear();
+        ProjectMember loaded = entityManager.find(ProjectMember.class, value.getId());
+        assertThat(loaded.getProject().getId()).isEqualTo(value.getId().getProjectId());
+        assertThat(loaded.getUser().getId()).isEqualTo(value.getId().getUserId());
+    }
+
+    private ProjectMember member(Project project, User user) {
+        return persist(ProjectMember.builder().project(project).user(user).build());
     }
 
 }
