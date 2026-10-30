@@ -20,14 +20,26 @@ public class GitHubTokenProvider {
     }
 
     public String token(Authentication authentication, HttpServletRequest request) {
-        if (properties.github().appType() != AuthProperties.AppType.APP) {
-            throw new ApiException(409, "GITHUB_APP_REQUIRED", "저장소 연결에는 GitHub App 로그인이 필요합니다.");
-        }
         OAuth2AuthorizedClient client = clients.loadAuthorizedClient("github", authentication, request);
         if (client == null || (client.getAccessToken().getExpiresAt() != null
-                && !client.getAccessToken().getExpiresAt().isAfter(Instant.now().plusSeconds(15)))) {
+                && !client.getAccessToken().getExpiresAt().isAfter(Instant.now().plusSeconds(15)))
+                || !client.getClientRegistration().getClientId().equals(properties.github().clientId())) {
             throw new ApiException(401, "GITHUB_REAUTH_REQUIRED", "GitHub에 다시 로그인해 주세요.");
         }
         return client.getAccessToken().getTokenValue();
+    }
+
+    public String oauthToken(Authentication authentication, HttpServletRequest request) {
+        if (properties.github().appType() != AuthProperties.AppType.OAUTH) {
+            throw new ApiException(503, "GITHUB_OAUTH_NOT_CONFIGURED", "GitHub 저장소 연결을 준비하고 있어요. 서비스 관리자에게 문의해 주세요.");
+        }
+        String token = token(authentication, request);
+        OAuth2AuthorizedClient client = clients.loadAuthorizedClient("github", authentication, request);
+        var scopes = client.getAccessToken().getScopes();
+        boolean organizationAccess = scopes.contains("read:org") || scopes.contains("write:org") || scopes.contains("admin:org");
+        if (!scopes.contains("repo") || !organizationAccess) {
+            throw new ApiException(401, "GITHUB_REAUTH_REQUIRED", "저장소와 조직 접근 권한을 확인하려면 GitHub에 다시 로그인해 주세요.");
+        }
+        return token;
     }
 }

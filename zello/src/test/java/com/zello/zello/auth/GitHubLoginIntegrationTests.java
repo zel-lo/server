@@ -43,6 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(properties = {
         "zello.auth.github.enabled=true",
+        "zello.auth.github.app-type=APP",
         "zello.auth.github.client-id=test-client-id",
         "zello.auth.github.client-secret=test-only-secret",
         "zello.auth.github.redirect-uri=http://127.0.0.1:8080/login/oauth2/code/github",

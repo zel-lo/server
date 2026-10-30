@@ -17,6 +17,31 @@ import static org.assertj.core.api.Assertions.*;
 
 class GitHubTokenProviderTests {
     @Test
+    void oauthRequiresTheCurrentClientAndRepositoryScopesInsteadOfReusingTheOldGithubAppSession() {
+        var clients = new HttpSessionOAuth2AuthorizedClientRepository();
+        var properties = new AuthProperties("http://127.0.0.1:5173", new AuthProperties.GitHub(true, "oauth-client", "test-secret",
+                "http://127.0.0.1:8080/login/oauth2/code/github", AuthProperties.AppType.OAUTH));
+        var provider = new GitHubTokenProvider(clients, properties);
+        var principal = new ZelloPrincipal(1L, 2L);
+        var authentication = new UsernamePasswordAuthenticationToken(principal, "unused", principal.getAuthorities());
+        var request = new MockHttpServletRequest();
+        var registration = ClientRegistration.withRegistrationId("github").clientId("oauth-client").clientSecret("test-secret")
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .redirectUri("http://127.0.0.1:8080/login/oauth2/code/github")
+                .authorizationUri("https://github.com/login/oauth/authorize").tokenUri("https://github.com/login/oauth/access_token").build();
+        var missingScopes = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "scope-limited", Instant.now(), Instant.now().plusSeconds(3600));
+        clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), missingScopes), authentication, request, new org.springframework.mock.web.MockHttpServletResponse());
+        assertThatThrownBy(() -> provider.oauthToken(authentication, request)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("GITHUB_REAUTH_REQUIRED"));
+        var valid = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "valid-oauth", Instant.now(), Instant.now().plusSeconds(3600), java.util.Set.of("repo", "read:org", "read:user"));
+        clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), valid), authentication, request, new org.springframework.mock.web.MockHttpServletResponse());
+        assertThat(provider.oauthToken(authentication, request)).isEqualTo("valid-oauth");
+        var changedClient = new GitHubTokenProvider(clients, new AuthProperties("http://127.0.0.1:5173", new AuthProperties.GitHub(true, "another-client", "test-secret",
+                "http://127.0.0.1:8080/login/oauth2/code/github", AuthProperties.AppType.OAUTH)));
+        assertThatThrownBy(() -> changedClient.oauthToken(authentication, request)).isInstanceOf(ApiException.class);
+    }
+
+    @Test
     void usesOnlyTheCurrentServerSessionAndRejectsExpiredOrMissingGithubAuthorization() {
         var clients = new HttpSessionOAuth2AuthorizedClientRepository();
         var properties = new AuthProperties("http://127.0.0.1:5173", new AuthProperties.GitHub(true, "id", "secret",

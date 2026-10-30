@@ -51,7 +51,7 @@ public class SecurityConfiguration {
                 .userNameAttributeName("id").clientName("GitHub")
                 .clientSettings(ClientRegistration.ClientSettings.builder().requireProofKey(true).build());
         if (github.appType() == AuthProperties.AppType.OAUTH) {
-            builder.scope("read:user");
+            builder.scope("read:user", "repo", "read:org");
         }
         return new InMemoryClientRegistrationRepository(builder.build());
     }

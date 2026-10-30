@@ -33,10 +33,13 @@ public record AuthProperties(
             @DefaultValue("") String clientId,
             @DefaultValue("") String clientSecret,
             @DefaultValue("http://127.0.0.1:8080/login/oauth2/code/github") String redirectUri,
-            @DefaultValue("APP") AppType appType) {
+            @DefaultValue("OAUTH") AppType appType) {
         public GitHub {
             if (enabled && (clientId.isBlank() || clientSecret.isBlank())) {
                 throw new IllegalArgumentException("GitHub login requires GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET");
+            }
+            if (enabled && appType == AppType.OAUTH && clientId.startsWith("Iv")) {
+                throw new IllegalArgumentException("OAuth App credentials are required; a GitHub App Client ID cannot be reused");
             }
             URI callback = URI.create(redirectUri);
             if (!callback.isAbsolute() || callback.getHost() == null || callback.getUserInfo() != null

@@ -46,6 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.session.timeout=30m",
         "server.servlet.session.cookie.name=JSESSIONID",
         "zello.auth.github.enabled=true",
+        "zello.auth.github.app-type=APP",
         "zello.auth.github.client-id=test-id",
         "zello.auth.github.client-secret=test-secret",
         "zello.auth.github.redirect-uri=http://127.0.0.1:8080/login/oauth2/code/github"

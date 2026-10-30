@@ -27,7 +27,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties = "zello.github.app-slug=test-app")
+@SpringBootTest(properties = {"zello.github.app-slug=test-app", "zello.auth.github.app-type=APP"})
 @AutoConfigureMockMvc
 class RepositoryConnectionTests {
     private static final AtomicLong IDS = new AtomicLong(70_000_000);
