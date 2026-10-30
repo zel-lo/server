@@ -28,6 +28,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @Transactional
@@ -350,5 +351,89 @@ class EntityPersistenceTests {
         assertThat(entityManager.find(Notification.class, second.getId()).getReadAt()).isNull();
     }
 
+
+    @Test
+    void databaseRejectsIssuePrLinksAcrossRepositories() {
+        Issue issue = issue(repository());
+        PullRequest pr = pullRequest(repository());
+        assertThatThrownBy(() -> entityManager.createNativeQuery(
+                "insert into issue_pull_requests (issue_id, pull_request_id, repository_id, created_at) values (:issue, :pr, :repo, current_timestamp)")
+                .setParameter("issue", issue.getId()).setParameter("pr", pr.getId())
+                .setParameter("repo", issue.getRepositoryId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void databaseRejectsActivitiesWithAnUnrelatedProject() {
+        Activity value = activity(project());
+        Project other = project();
+        assertThatThrownBy(() -> entityManager.createNativeQuery("update activities set project_id=:other where id=:id")
+                .setParameter("other", other.getId()).setParameter("id", value.getId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void databaseRejectsNullRepositoryForAnIssueActivity() {
+        Activity value = activity(project());
+        assertThatThrownBy(() -> entityManager.createNativeQuery("update activities set repository_id=null where id=:id")
+                .setParameter("id", value.getId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void databaseRejectsNotificationForANonMember() {
+        Project project = project();
+        Activity activity = activity(project);
+        User outsider = user();
+        assertThatThrownBy(() -> entityManager.createNativeQuery(
+                "insert into notifications (project_id, recipient_user_id, activity_id, title, created_at) values (:project, :user, :activity, 'Notice', current_timestamp)")
+                .setParameter("project", project.getId()).setParameter("user", outsider.getId())
+                .setParameter("activity", activity.getId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void databaseRejectsAWithdrawnUserWithoutATimestamp() {
+        User value = user();
+        assertThatThrownBy(() -> entityManager.createNativeQuery("update users set status='WITHDRAWN' where id=:id")
+                .setParameter("id", value.getId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void databaseRejectsAPublishedIssueWithoutAGithubIdentity() {
+        Issue value = issue(repository());
+        assertThatThrownBy(() -> entityManager.createNativeQuery("update issues set publish_status='PUBLISHED' where id=:id")
+                .setParameter("id", value.getId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void databaseRejectsHistoricalNotificationsForAnInitialSync() {
+        RepositorySyncRun value = syncRun();
+        assertThatThrownBy(() -> entityManager.createNativeQuery("update repository_sync_runs set emit_notifications=true where id=:id")
+                .setParameter("id", value.getId()).executeUpdate())
+                .isInstanceOf(jakarta.persistence.PersistenceException.class);
+    }
+
+    @Test
+    void staleProjectChangesAreRejectedByOptimisticLocking() {
+        Project stale = project();
+        entityManager.detach(stale);
+        Project current = entityManager.find(Project.class, stale.getId());
+        current.rename("New version");
+        entityManager.flush();
+        stale.rename("Stale version");
+        assertThatThrownBy(() -> entityManager.merge(stale))
+                .isInstanceOf(jakarta.persistence.OptimisticLockException.class);
+    }
+
+    @Test
+    void crossRepositoryLinksAreAlsoRejectedBeforePersistence() {
+        Issue issue = issue(repository());
+        PullRequest pr = pullRequest(repository());
+        assertThatThrownBy(() -> IssuePullRequest.builder().issue(issue).pullRequest(pr).build())
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("repository_id");
+    }
 
 }
