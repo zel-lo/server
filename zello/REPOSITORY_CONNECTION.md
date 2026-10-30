@@ -17,13 +17,13 @@ GITHUB_APP_SLUG=your-github-app-slug
 1. `http://127.0.0.1:5173/#/login`에서 로그인한다.
 2. **저장소** 또는 **프로젝트 설정 → 저장소 연결**로 이동한다.
 3. zello 프로젝트를 생성하거나 기존 프로젝트를 선택한다.
-4. **GitHub App 설치·저장소 선택**을 누른다. GitHub에서 설치할 개인 계정 또는 Organization과 허용할 저장소를 선택한다. 설치 승인 자체는 사용자가 수행한다.
-5. zello 화면으로 돌아와 **연결 목록 새로고침**을 누른다.
+4. **GitHub 저장소 선택**을 누른다. GitHub에서 설치할 개인 계정 또는 Organization과 허용할 저장소를 선택한다. 설치 승인 자체는 사용자가 수행한다.
+5. zello 화면으로 돌아오면 목록이 자동으로 갱신된다. 필요하면 **연결 목록 새로고침**을 누른다.
 6. 계정/Organization과 저장소를 선택하고 **선택한 저장소 연결**을 누른다.
 
 App 설치 대상이 `Only on this account`이면 App 소유 계정에만 설치할 수 있다. 다른 Organization을 대상으로 설치하려면 App의 설치 가능 범위와 조직 정책을 먼저 검토해야 한다. 이 구현은 GitHub App을 공개하거나 조직 권한을 자동으로 확대하지 않는다. Organization에서 설치 승인이 필요한 경우 관리자의 승인을 기다린 뒤 목록을 새로고침한다.
 
-설치 화면은 새 탭에서 열리며, 설치 후 수동으로 새로고침한다. 별도의 setup callback이나 사용자 입력 installation_id를 신뢰하는 흐름을 추가하지 않았다. 설치 후 복귀 URL을 App에 설정할 필요는 없고, OAuth 로그인 callback은 기존 8080 주소를 그대로 사용한다.
+설치 화면은 새 탭에서 열리며, zello 탭으로 돌아올 때 목록을 자동으로 다시 조회한다. 별도의 setup callback이나 사용자 입력 installation_id를 신뢰하는 흐름을 추가하지 않았다. 설치 후 복귀 URL을 App에 설정할 필요는 없고, OAuth 로그인 callback은 기존 8080 주소를 그대로 사용한다.
 
 ## API
 
