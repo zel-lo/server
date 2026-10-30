@@ -9,6 +9,7 @@ import com.zello.zello.domain.repository.GitRepository;
 import com.zello.zello.domain.repository.RepositorySyncRun;
 import com.zello.zello.domain.project.ProjectInvitation;
 import com.zello.zello.domain.github.WebhookDelivery;
+import com.zello.zello.domain.issue.Issue;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -182,6 +183,23 @@ class EntityPersistenceTests {
     private WebhookDelivery delivery() {
         return persist(WebhookDelivery.builder().installation(installation()).githubDeliveryId(java.util.UUID.randomUUID().toString())
                 .eventName("issues").payload(java.util.Map.of("action", "opened")).build());
+    }
+
+    @Test
+    void persistsIssue() {
+        Issue value = issue(repository());
+        GitHubAccount assignee = account();
+        value.assignTo(assignee);
+        Long version = value.getVersion();
+        entityManager.flush();
+        assertThat(value.getVersion()).isGreaterThan(version);
+        entityManager.clear();
+        Issue loaded = entityManager.find(Issue.class, value.getId());
+        assertThat(loaded.getAssigneeAccount().getId()).isEqualTo(assignee.getId());
+    }
+
+    private Issue issue(GitRepository repository) {
+        return persist(Issue.builder().repository(repository).issueKey("ZELLO-" + IDS.incrementAndGet()).title("Work").build());
     }
 
 }
