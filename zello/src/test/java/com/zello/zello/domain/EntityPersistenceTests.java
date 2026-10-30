@@ -17,6 +17,7 @@ import com.zello.zello.domain.pullrequest.PullRequestReview;
 import com.zello.zello.domain.patchnote.PatchNote;
 import com.zello.zello.domain.patchnote.PatchNoteItem;
 import com.zello.zello.domain.deployment.BuildRun;
+import com.zello.zello.domain.deployment.Deployment;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -292,6 +293,18 @@ class EntityPersistenceTests {
     private BuildRun buildRun() {
         return persist(BuildRun.builder().repository(repository()).githubRunId(IDS.incrementAndGet())
                 .workflowName("CI").headSha("a".repeat(40)).htmlUrl("https://example.test/run/1").build());
+    }
+
+    @Test
+    void persistsDeployment() {
+        Deployment value = deployment();
+        entityManager.clear();
+        assertThat(entityManager.find(Deployment.class, value.getId()).getRepository().getId()).isEqualTo(value.getRepositoryId());
+    }
+
+    private Deployment deployment() {
+        return persist(Deployment.builder().repository(repository()).githubDeploymentId(IDS.incrementAndGet())
+                .environment("production").commitSha("a".repeat(40)).build());
     }
 
 }
