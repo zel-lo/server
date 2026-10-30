@@ -2,6 +2,7 @@ package com.zello.zello.domain;
 
 import com.zello.zello.domain.github.GitHubAccount;
 import com.zello.zello.domain.user.User;
+import com.zello.zello.domain.project.Project;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -58,6 +59,21 @@ class EntityPersistenceTests {
 
     private User user() {
         return persist(User.builder().githubAccount(account()).build());
+    }
+
+    @Test
+    void persistsProject() {
+        Project value = project();
+        Long version = value.getVersion();
+        value.rename("Renamed");
+        entityManager.flush();
+        assertThat(value.getVersion()).isGreaterThan(version);
+        entityManager.clear();
+        assertThat(entityManager.find(Project.class, value.getId()).getName()).isEqualTo("Renamed");
+    }
+
+    private Project project() {
+        return persist(Project.builder().ownerUser(user()).name("Project").build());
     }
 
 }
