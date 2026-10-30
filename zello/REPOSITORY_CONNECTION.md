@@ -17,13 +17,25 @@ GITHUB_APP_SLUG=your-github-app-slug
 1. `http://127.0.0.1:5173/#/login`에서 로그인한다.
 2. **저장소** 또는 **프로젝트 설정 → 저장소 연결**로 이동한다.
 3. zello 프로젝트를 생성하거나 기존 프로젝트를 선택한다.
-4. **GitHub 저장소 선택**을 누른다. GitHub에서 설치할 개인 계정 또는 Organization과 허용할 저장소를 선택한다. 설치 승인 자체는 사용자가 수행한다.
-5. zello 화면으로 돌아오면 목록이 자동으로 갱신된다. 필요하면 **연결 목록 새로고침**을 누른다.
+4. **GitHub 연결** 또는 **GitHub 저장소 권한 변경**을 누른다. GitHub에서 설치할 개인 계정 또는 Organization과 허용할 저장소를 선택한다. 설치 승인 자체는 사용자가 수행한다.
+5. 승인하면 원래 zello 프로젝트 화면으로 자동 복귀한다. 서버가 검증한 계정을 선택하고 저장소 목록을 불러온다.
 6. 계정/Organization과 저장소를 선택하고 **선택한 저장소 연결**을 누른다.
 
 App 설치 대상이 `Only on this account`이면 App 소유 계정에만 설치할 수 있다. 다른 Organization을 대상으로 설치하려면 App의 설치 가능 범위와 조직 정책을 먼저 검토해야 한다. 이 구현은 GitHub App을 공개하거나 조직 권한을 자동으로 확대하지 않는다. Organization에서 설치 승인이 필요한 경우 관리자의 승인을 기다린 뒤 목록을 새로고침한다.
 
-설치 화면은 새 탭에서 열리며, zello 탭으로 돌아올 때 목록을 자동으로 다시 조회한다. 별도의 setup callback이나 사용자 입력 installation_id를 신뢰하는 흐름을 추가하지 않았다. 설치 후 복귀 URL을 App에 설정할 필요는 없고, OAuth 로그인 callback은 기존 8080 주소를 그대로 사용한다.
+설치·권한 변경은 같은 탭에서 진행하고 GitHub의 Setup URL을 통해 원래 프로젝트로 복귀한다. App 관리자가 최초 한 번 아래 설정을 적용한다. 일반 사용자는 Developer settings에 들어갈 필요가 없다.
+
+| GitHub App 설정 | 개발 값 |
+|---|---|
+| Homepage URL | `http://127.0.0.1:5173` |
+| OAuth Redirect URI | `http://127.0.0.1:8080/login/oauth2/code/github` |
+| Setup URL | `http://127.0.0.1:8080/api/github/installations/callback` |
+| Redirect on update | 켬 |
+| Request user authorization (OAuth) during installation | 끔; zello에서 먼저 로그인한 세션을 사용 |
+
+`POST /api/projects/{projectId}/github/connection`은 CSRF와 프로젝트 관리 권한을 확인하고 임의의 state를 만든다. 세션에는 state의 해시·사용자·프로젝트·10분 만료 시각을 암호화하여 저장한다. 새 요청은 이전 요청을 대체한다. callback은 state와 같은 사용자 세션, 현재 프로젝트 권한을 확인한 뒤 GitHub 사용자 토큰으로 해당 설치에 접근할 수 있는지 다시 검증한다. 성공해도 저장소를 자동 등록하지 않고 검증된 선택 화면으로 돌아간다. 실제 연결은 사용자가 선택한 후 기존 POST API로 처리한다. 실패·취소·만료는 고정된 안내 코드로 복귀하며 사용자 입력 URL로 리다이렉트하지 않는다.
+
+이미 승인한 저장소는 GitHub 화면에 다시 가지 않고 zello 목록에서 선택할 수 있다. 목록 검색은 현재 불러온 페이지에서 동작하고 다른 페이지는 이전/다음 버튼으로 조회한다.
 
 ## API
 
@@ -34,7 +46,10 @@ App 설치 대상이 `Only on this account`이면 App 소유 계정에만 설치
 | GET /api/projects | 활성 멤버십이 있는 보관되지 않은 프로젝트 목록 |
 | POST /api/projects | 프로젝트와 생성자의 ADMIN 멤버십 생성; 생성자는 OWNER로 표시 |
 | GET /api/projects/{projectId} | 프로젝트 상세와 저장소 관리 가능 여부 |
-| GET /api/github/config | 서버 설정에서 만든 GitHub App 설치 URL |
+| GET /api/github/config | GitHub 연결 설정 여부 |
+| POST /api/projects/{projectId}/github/connection | 프로젝트·세션에 묶인 GitHub 승인 시작 주소 |
+| GET /api/github/installations/callback | 설치 후 state·사용자·프로젝트·GitHub 접근 검증 및 자동 복귀 |
+| GET /api/github/installations/{installationId} | 현재 사용자가 접근 가능한 특정 설치; 복귀 시 계정 선택에 사용 |
 | GET /api/github/installations?page=1 | 현재 사용자 토큰으로 접근 가능한 활성 설치 목록 |
 | GET /api/github/installations/{installationId}/repositories?page=1 | 해당 설치 및 현재 사용자가 접근 가능한 원본 저장소 목록 |
 | GET /api/projects/{projectId}/repositories | 현재 사용자의 GitHub 접근 권한까지 확인한 연결 목록 |
@@ -68,6 +83,6 @@ GitHub 목록은 페이지당 100개이며 `items`, `hasNext`, `page`를 반환�
 
 ## 검증
 
-프로젝트 생성·멤버십, 개인/Organization 연결, 중복과 재연결, 비멤버와 VIEWER 권한 차단, 위조 ID 거부, 접근 취소에 따른 비공개 정보 숨김, CSRF, 세션 토큰 만료, GitHub 페이지 탐색과 안전한 오류 응답을 테스트한다. GitHub HTTP 응답을 테스트 대역으로 제공하므로 실제 App 설치 승인과 원본 저장소 연결은 사용자가 GitHub에서 승인한 후 별도로 확인한다.
+프로젝트 생성·멤버십, 개인/Organization 연결, 중복과 재연결, 비멤버와 VIEWER 권한 차단, 위조 ID·state 거부, callback 만료·재사용·다른 세션 거부, 원래 프로젝트 복원, 접근 취소에 따른 비공개 정보 숨김, CSRF, 세션 토큰 만료, GitHub 페이지 탐색과 안전한 오류 응답을 테스트한다. GitHub HTTP 응답을 테스트 대역으로 제공하므로 실제 App 설치 승인과 원본 저장소 연결은 사용자가 GitHub에서 승인한 후 별도로 확인한다.
 
 공식 문서: [사용자 설치·저장소 조회 API](https://docs.github.com/en/rest/apps/installations), [설치 후 복귀 검증](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-setup-url), [App 설치](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
