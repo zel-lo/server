@@ -5,6 +5,7 @@ import com.zello.zello.domain.user.User;
 import com.zello.zello.domain.project.Project;
 import com.zello.zello.domain.project.ProjectMember;
 import com.zello.zello.domain.github.GitHubInstallation;
+import com.zello.zello.domain.repository.GitRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -101,6 +102,27 @@ class EntityPersistenceTests {
     private GitHubInstallation installation() {
         return persist(GitHubInstallation.builder().ownerAccount(account())
                 .githubInstallationId(IDS.incrementAndGet()).permissions(java.util.Map.of("issues", "write")).build());
+    }
+
+    @Test
+    void persistsGitRepository() {
+        GitRepository value = repository();
+        value.disconnect(com.zello.zello.domain.common.EntitySupport.now());
+        entityManager.flush();
+        entityManager.clear();
+        GitRepository loaded = entityManager.find(GitRepository.class, value.getId());
+        assertThat(loaded.getProject().getId()).isEqualTo(value.getProjectId());
+        assertThat(loaded.getConnectionStatus()).isEqualTo(GitRepository.ConnectionStatus.DISCONNECTED);
+    }
+
+    private GitRepository repository() {
+        return repository(project());
+    }
+
+    private GitRepository repository(Project project) {
+        return persist(GitRepository.builder().project(project).installation(installation())
+                .githubRepoId(IDS.incrementAndGet()).ownerLogin("team").name("client")
+                .htmlUrl("https://example.test/team/client").defaultBranch("main").privateRepository(true).build());
     }
 
 }
