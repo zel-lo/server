@@ -133,6 +133,23 @@ public class GitRepository extends IdentityEntity {
         this.connectionStatus = ConnectionStatus.DISCONNECTED;
     }
 
+    public void confirmConnection(GitHubInstallation installation, String ownerLogin, String name, String htmlUrl,
+                                  String description, String language, String defaultBranch, boolean privateRepository) {
+        this.installation = EntitySupport.required(installation, "installation");
+        this.installationId = EntitySupport.required(installation.getId(), "persisted installation.id");
+        this.ownerLogin = EntitySupport.text(ownerLogin, "ownerLogin");
+        this.name = EntitySupport.text(name, "name");
+        this.htmlUrl = EntitySupport.text(htmlUrl, "htmlUrl");
+        this.description = description;
+        this.primaryLanguage = language;
+        this.defaultBranch = EntitySupport.text(defaultBranch, "defaultBranch");
+        this.privateRepository = privateRepository;
+        this.connectionStatus = ConnectionStatus.CONNECTED;
+        this.disconnectedAt = null;
+        this.lastSyncError = null;
+        this.lastFetchedAt = EntitySupport.now();
+    }
+
     public enum ConnectionStatus {
         PENDING, SYNCING, CONNECTED, PARTIAL_FAILURE, AUTH_REQUIRED, DISCONNECTED
     }

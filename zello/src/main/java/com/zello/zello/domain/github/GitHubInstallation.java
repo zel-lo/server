@@ -71,6 +71,13 @@ public class GitHubInstallation extends IdentityEntity {
         this.removedAt = removedAt;
     }
 
+    public void confirmAccess(Map<String, Object> permissions) {
+        this.permissions = new java.util.LinkedHashMap<>(permissions == null ? Map.of() : permissions);
+        this.status = Status.ACTIVE;
+        this.suspendedAt = null;
+        this.removedAt = null;
+    }
+
     public enum Status {
         ACTIVE, SUSPENDED, REMOVED
     }

@@ -1,0 +1,42 @@
+package com.zello.zello.integration.github;
+
+import com.zello.zello.api.ApiException;
+import com.zello.zello.auth.AuthProperties;
+import com.zello.zello.auth.ZelloPrincipal;
+import java.time.Instant;
+import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
+import org.springframework.security.oauth2.client.web.HttpSessionOAuth2AuthorizedClientRepository;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.OAuth2AccessToken;
+
+import static org.assertj.core.api.Assertions.*;
+
+class GitHubTokenProviderTests {
+    @Test
+    void usesOnlyTheCurrentServerSessionAndRejectsExpiredOrMissingGithubAuthorization() {
+        var clients = new HttpSessionOAuth2AuthorizedClientRepository();
+        var properties = new AuthProperties("http://127.0.0.1:5173", new AuthProperties.GitHub(true, "id", "secret",
+                "http://127.0.0.1:8080/login/oauth2/code/github", AuthProperties.AppType.APP));
+        var provider = new GitHubTokenProvider(clients, properties);
+        var principal = new ZelloPrincipal(1L, 2L);
+        var authentication = new UsernamePasswordAuthenticationToken(principal, "unused", principal.getAuthorities());
+        var request = new MockHttpServletRequest();
+        assertThatThrownBy(() -> provider.token(authentication, request)).isInstanceOf(ApiException.class);
+        var registration = ClientRegistration.withRegistrationId("github").clientId("id").clientSecret("secret")
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .redirectUri("http://127.0.0.1:8080/login/oauth2/code/github")
+                .authorizationUri("https://github.com/login/oauth/authorize").tokenUri("https://github.com/login/oauth/access_token").build();
+        var token = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "server-session-token", Instant.now(), Instant.now().plusSeconds(3600));
+        clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), token), authentication, request, new org.springframework.mock.web.MockHttpServletResponse());
+        assertThat(provider.token(authentication, request)).isEqualTo("server-session-token");
+        assertThatThrownBy(() -> provider.token(authentication, new MockHttpServletRequest())).isInstanceOf(ApiException.class);
+        var expired = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "expired", Instant.now().minusSeconds(7200), Instant.now().minusSeconds(3600));
+        clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), expired), authentication, request, new org.springframework.mock.web.MockHttpServletResponse());
+        assertThatThrownBy(() -> provider.token(authentication, request)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("GITHUB_REAUTH_REQUIRED"));
+    }
+}

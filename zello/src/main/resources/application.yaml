@@ -3,6 +3,10 @@ spring:
     import: optional:file:.env[.properties]
   application:
     name: zello
+  session:
+    timeout: 30m
+    jdbc:
+      initialize-schema: never
   datasource:
     url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/zello?serverTimezone=UTC&characterEncoding=UTF-8}
     username: ${DB_USERNAME:zello}
@@ -19,10 +23,15 @@ server:
     session:
       timeout: 30m
       cookie:
+        name: JSESSIONID
         http-only: true
         same-site: lax
         secure: ${SESSION_COOKIE_SECURE:false}
 zello:
+  session:
+    encryption-key: ${SESSION_ENCRYPTION_KEY:}
+  github:
+    app-slug: ${GITHUB_APP_SLUG:}
   auth:
     frontend-base-url: ${FRONTEND_BASE_URL:http://127.0.0.1:5173}
     github:
