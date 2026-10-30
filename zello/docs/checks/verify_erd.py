@@ -64,6 +64,18 @@ class ConstraintChecks(unittest.TestCase):
     def add_member(self, project, user):
         self.add('project_members', project_id=project, user_id=user, role='MEMBER', notify_team_updates=True, notify_deployments=True, weekly_summary_enabled=True)
 
+    def test_oauth_repository_has_no_fabricated_installation(self):
+        values = dict(project_id=1, github_repo_id=999, owner_login='team', name='oauth-repo',
+                      html_url='https://example.test', default_branch='main', is_private=True,
+                      connection_status='CONNECTED', authorization_method='OAUTH')
+        self.add('repositories', **values)
+        values['github_repo_id'] = 1000
+        values['installation_id'] = 1
+        self.invalid(lambda: self.add('repositories', **values), 'ck_repositories_authorization')
+        values['authorization_method'] = 'GITHUB_APP'
+        values['installation_id'] = None
+        self.invalid(lambda: self.add('repositories', **values), 'ck_repositories_authorization')
+
     def issue(self, **overrides):
         values = dict(repository_id=1, issue_key=f'ZELLO-{overrides.get("id", 100)}', title='Work', work_status='TODO', priority='MEDIUM', source_type='REQUEST', publish_status='LOCAL')
         values.update(overrides)

@@ -102,7 +102,8 @@ Table "github_installations" {
 Table "repositories" {
   "id" BIGINT [pk, not null, increment]
   "project_id" BIGINT [not null]
-  "installation_id" BIGINT [not null]
+  "installation_id" BIGINT
+  "authorization_method" VARCHAR(20) [not null, default: 'GITHUB_APP']
   "github_repo_id" BIGINT [not null]
   "owner_login" VARCHAR(100) [not null]
   "name" VARCHAR(100) [not null]
@@ -123,6 +124,7 @@ Table "repositories" {
 
   Checks {
     `connection_status IN ('PENDING', 'SYNCING', 'CONNECTED', 'PARTIAL_FAILURE', 'AUTH_REQUIRED', 'DISCONNECTED')` [name: 'ck_repositories_connection_status']
+    `(authorization_method = 'GITHUB_APP' AND installation_id IS NOT NULL) OR (authorization_method = 'OAUTH' AND installation_id IS NULL)` [name: 'ck_repositories_authorization']
   }
 
   Indexes {
@@ -556,7 +558,7 @@ Ref "fk_github_installations_owner":"github_accounts"."id" <? "github_installati
 
 Ref "fk_repositories_project":"projects"."id" <? "repositories"."project_id" [update: restrict, delete: restrict]
 
-Ref "fk_repositories_installation":"github_installations"."id" <? "repositories"."installation_id" [update: restrict, delete: restrict]
+Ref "fk_repositories_installation":"github_installations"."id" ?<? "repositories"."installation_id" [update: restrict, delete: restrict]
 
 Ref "fk_repository_sync_runs_repository":"repositories"."id" <? "repository_sync_runs"."repository_id" [update: restrict, delete: restrict]
 

@@ -67,6 +67,7 @@ erDiagram
         bigint id PK
         bigint project_id FK
         bigint installation_id FK
+        varchar authorization_method
         bigint github_repo_id
         varchar name
     }
@@ -198,7 +199,7 @@ erDiagram
 erDiagram
     direction LR
     githubAccounts ||..o{ githubInstallations : "설치 계정"
-    githubInstallations ||..o{ repositories : "저장소 접근"
+    githubInstallations |o..o{ repositories : "저장소 접근"
     githubInstallations |o..o{ webhookDeliveries : "이벤트 수신"
     repositories ||..o{ repositorySyncRuns : "수집 실행"
     repositorySyncRuns |o..o{ repositorySyncRuns : "재시도 이력"
@@ -283,7 +284,7 @@ erDiagram
 
 ### 5.5 `repositories` — 프로젝트의 GitHub 저장소 연결
 
-- `id` PK, `project_id` FK → projects, `installation_id` FK → github_installations.
+- `id` PK, `project_id` FK → projects, `installation_id` nullable FK → github_installations. `authorization_method`는 GITHUB_APP 또는 OAUTH이며 OAuth 연결은 설치 없이 저장한다.
 - `github_repo_id` BIGINT, `owner_login` VARCHAR(100), `name` VARCHAR(100), `html_url` VARCHAR(2048).
 - `description` TEXT?, `primary_language` VARCHAR(100)?, `default_branch` VARCHAR(255), `is_private` BOOLEAN.
 - `connection_status` VARCHAR(30), `last_synced_at` DATETIME?, `last_sync_error` TEXT?, `disconnected_at` DATETIME?.
@@ -553,3 +554,5 @@ UNIQUE 및 FK 인덱스 외에 실제 조회 조건에 맞춰 다음을 추가�
 - Mermaid 도메인 관계도와 전체 관계도의 문법을 확인한다.
 - `server/zello`에서 `python3 docs/checks/verify_erd.py`를 실행하면, 별도 패키지 없이 메모리 SQLite에서 21개 제약 시나리오를 검증한다. 정상 연결, 다른 저장소·프로젝트 연결 거부, NULL을 통한 소속 검사 우회 거부, 알림 수신·개별 읽음, 탈퇴·발행·병합·초대·동기화 상태 조합을 포함한다.
 - 이 검사는 MySQL 전용 테이블 옵션·타임스탬프·인덱스·자동 증가 표기를 SQLite에 맞게 바꾸어 **관계·CHECK 논리**를 확인한다. MySQL 엔진에서의 실행 검증과 API 권한·이벤트 순서 처리 검증을 대신하지 않는다. 실제 MySQL 적용 전에는 별도의 빈 스키마에서 DDL 생성과 무결성 검증을 수행해야 한다.
+
+OAuth 전환: repositories의 authorization_method/installation_id 조합 CHECK를 포함하여 현재 업무 스키마는 49개 CHECK를 갖는다. 운영 적용은 V3 마이그레이션으로 수행한다.

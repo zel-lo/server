@@ -105,7 +105,8 @@ CREATE TABLE github_installations (
 CREATE TABLE repositories (
     id BIGINT NOT NULL AUTO_INCREMENT,
     project_id BIGINT NOT NULL,
-    installation_id BIGINT NOT NULL,
+    installation_id BIGINT NULL,
+    authorization_method VARCHAR(20) NOT NULL DEFAULT 'GITHUB_APP',
     github_repo_id BIGINT NOT NULL,
     owner_login VARCHAR(100) NOT NULL,
     name VARCHAR(100) NOT NULL,
@@ -132,6 +133,10 @@ CREATE TABLE repositories (
         REFERENCES github_installations (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
     CONSTRAINT ck_repositories_connection_status CHECK (
         connection_status IN ('PENDING', 'SYNCING', 'CONNECTED', 'PARTIAL_FAILURE', 'AUTH_REQUIRED', 'DISCONNECTED')
+    ),
+    CONSTRAINT ck_repositories_authorization CHECK (
+        (authorization_method = 'GITHUB_APP' AND installation_id IS NOT NULL)
+        OR (authorization_method = 'OAUTH' AND installation_id IS NULL)
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

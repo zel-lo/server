@@ -45,6 +45,7 @@ erDiagram
         bigint id PK
         bigint project_id FK
         bigint installation_id FK
+        varchar authorization_method
         bigint github_repo_id
         varchar name
     }
@@ -160,7 +161,7 @@ erDiagram
     }
 
     githubAccounts ||..o{ githubInstallations : "설치 계정"
-    githubInstallations ||..o{ repositories : "저장소 접근"
+    githubInstallations |o..o{ repositories : "저장소 접근"
     githubInstallations |o..o{ webhookDeliveries : "이벤트 수신"
     repositories ||..o{ repositorySyncRuns : "수집 실행"
     repositorySyncRuns |o..o{ repositorySyncRuns : "재시도 이력"

@@ -23,15 +23,21 @@ import org.hibernate.type.SqlTypes;
                 @UniqueConstraint(name = "uk_repositories_project_github", columnNames = {"project_id", "github_repo_id"})
         },
         check = {
-                @CheckConstraint(name = "ck_repositories_connection_status", constraint = "connection_status IN ('PENDING', 'SYNCING', 'CONNECTED', 'PARTIAL_FAILURE', 'AUTH_REQUIRED', 'DISCONNECTED')")
+                @CheckConstraint(name = "ck_repositories_connection_status", constraint = "connection_status IN ('PENDING', 'SYNCING', 'CONNECTED', 'PARTIAL_FAILURE', 'AUTH_REQUIRED', 'DISCONNECTED')"),
+                @CheckConstraint(name = "ck_repositories_authorization", constraint = "(authorization_method = 'GITHUB_APP' AND installation_id IS NOT NULL) OR (authorization_method = 'OAUTH' AND installation_id IS NULL)")
         })
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class GitRepository extends IdentityEntity {
     @Column(name = "project_id", nullable = false)
     private Long projectId;
 
-    @Column(name = "installation_id", nullable = false)
+    @Column(name = "installation_id")
     private Long installationId;
+
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "authorization_method", nullable = false, length = 20)
+    private AuthorizationMethod authorizationMethod;
 
     @Column(name = "github_repo_id", nullable = false)
     private Long githubRepoId;
@@ -84,7 +90,7 @@ public class GitRepository extends IdentityEntity {
     @JoinColumn(name = "project_id", referencedColumnName = "id", insertable = false, updatable = false, foreignKey = @ForeignKey(name = "fk_repositories_project"))
     private Project project;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "installation_id", referencedColumnName = "id", insertable = false, updatable = false, foreignKey = @ForeignKey(name = "fk_repositories_installation"))
     private GitHubInstallation installation;
 
@@ -92,6 +98,7 @@ public class GitRepository extends IdentityEntity {
     private GitRepository(
             Project project,
             GitHubInstallation installation,
+            AuthorizationMethod authorizationMethod,
             Long githubRepoId,
             String ownerLogin,
             String name,
@@ -108,9 +115,11 @@ public class GitRepository extends IdentityEntity {
             LocalDateTime githubUpdatedAt,
             LocalDateTime lastFetchedAt) {
         this.project = EntitySupport.required(project, "project");
-        this.installation = EntitySupport.required(installation, "installation");
+        this.authorizationMethod = Objects.requireNonNullElse(authorizationMethod, AuthorizationMethod.GITHUB_APP);
+        this.installation = this.authorizationMethod == AuthorizationMethod.GITHUB_APP
+                ? EntitySupport.required(installation, "installation") : null;
         this.projectId = EntitySupport.required(project.getId(), "persisted project.id");
-        this.installationId = EntitySupport.required(installation.getId(), "persisted installation.id");
+        this.installationId = this.installation == null ? null : EntitySupport.required(this.installation.getId(), "persisted installation.id");
         this.githubRepoId = EntitySupport.required(githubRepoId, "githubRepoId");
         this.ownerLogin = EntitySupport.text(ownerLogin, "ownerLogin");
         this.name = EntitySupport.text(name, "name");
@@ -137,6 +146,20 @@ public class GitRepository extends IdentityEntity {
                                   String description, String language, String defaultBranch, boolean privateRepository) {
         this.installation = EntitySupport.required(installation, "installation");
         this.installationId = EntitySupport.required(installation.getId(), "persisted installation.id");
+        this.authorizationMethod = AuthorizationMethod.GITHUB_APP;
+        updateRepository(ownerLogin, name, htmlUrl, description, language, defaultBranch, privateRepository);
+    }
+
+    public void confirmOAuthConnection(String ownerLogin, String name, String htmlUrl, String description,
+                                       String language, String defaultBranch, boolean privateRepository) {
+        this.installation = null;
+        this.installationId = null;
+        this.authorizationMethod = AuthorizationMethod.OAUTH;
+        updateRepository(ownerLogin, name, htmlUrl, description, language, defaultBranch, privateRepository);
+    }
+
+    private void updateRepository(String ownerLogin, String name, String htmlUrl, String description,
+                                  String language, String defaultBranch, boolean privateRepository) {
         this.ownerLogin = EntitySupport.text(ownerLogin, "ownerLogin");
         this.name = EntitySupport.text(name, "name");
         this.htmlUrl = EntitySupport.text(htmlUrl, "htmlUrl");
@@ -153,5 +176,7 @@ public class GitRepository extends IdentityEntity {
     public enum ConnectionStatus {
         PENDING, SYNCING, CONNECTED, PARTIAL_FAILURE, AUTH_REQUIRED, DISCONNECTED
     }
+
+    public enum AuthorizationMethod { GITHUB_APP, OAUTH }
 
 }
