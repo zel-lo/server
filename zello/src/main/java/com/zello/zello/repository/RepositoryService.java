@@ -69,6 +69,23 @@ public class RepositoryService {
     }
 
     @Transactional
+    public RepositoryView connectOAuth(long projectId, long userId, com.zello.zello.integration.github.GitHubGateway.RemoteRepository source) {
+        var project = projectRepository.findLockedById(projectId).orElseThrow(ProjectService::notFound);
+        projects.requireMember(projectId, userId, true);
+        var existing = repositories.findByProjectIdAndGithubRepoId(projectId, source.id());
+        if (existing.isPresent() && existing.get().getConnectionStatus() != GitRepository.ConnectionStatus.DISCONNECTED) {
+            throw new ApiException(409, "REPOSITORY_ALREADY_CONNECTED", "이 프로젝트에 이미 연결된 저장소입니다.");
+        }
+        var repository = existing.orElseGet(() -> GitRepository.builder().project(project)
+                .authorizationMethod(GitRepository.AuthorizationMethod.OAUTH).githubRepoId(source.id())
+                .ownerLogin(source.owner().login()).name(source.name()).htmlUrl(source.htmlUrl())
+                .defaultBranch(source.defaultBranch()).privateRepository(source.privateRepository()).build());
+        repository.confirmOAuthConnection(source.owner().login(), source.name(), source.htmlUrl(), source.description(),
+                source.language(), source.defaultBranch(), source.privateRepository());
+        return RepositoryView.from(repositories.saveAndFlush(repository));
+    }
+
+    @Transactional
     public void disconnect(long projectId, long repositoryId, long userId) {
         projectRepository.findLockedById(projectId).orElseThrow(ProjectService::notFound);
         projects.requireMember(projectId, userId, true);
@@ -82,7 +99,7 @@ public class RepositoryService {
                                  String defaultBranch, boolean privateRepository, String status, boolean initialSyncCompleted) {
         static RepositoryView from(GitRepository repo) {
             return new RepositoryView(repo.getId().toString(), repo.getProjectId().toString(), repo.getGithubRepoId().toString(),
-                    repo.getInstallation().getGithubInstallationId().toString(), repo.getOwnerLogin(), repo.getName(), repo.getHtmlUrl(),
+                    repo.getInstallation() == null ? null : repo.getInstallation().getGithubInstallationId().toString(), repo.getOwnerLogin(), repo.getName(), repo.getHtmlUrl(),
                     repo.getDescription(), repo.getPrimaryLanguage(), repo.getDefaultBranch(), repo.getPrivateRepository(),
                     repo.getConnectionStatus().name(), repo.getInitialSyncCompletedAt() != null);
         }
