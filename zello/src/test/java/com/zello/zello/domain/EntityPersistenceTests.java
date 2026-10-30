@@ -8,6 +8,7 @@ import com.zello.zello.domain.github.GitHubInstallation;
 import com.zello.zello.domain.repository.GitRepository;
 import com.zello.zello.domain.repository.RepositorySyncRun;
 import com.zello.zello.domain.project.ProjectInvitation;
+import com.zello.zello.domain.github.WebhookDelivery;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -162,6 +163,25 @@ class EntityPersistenceTests {
         Project project = project();
         return persist(ProjectInvitation.builder().project(project).invitedByUser(project.getOwnerUser())
                 .tokenHash(java.util.UUID.randomUUID().toString()).expiresAt(com.zello.zello.domain.common.EntitySupport.now().plusDays(1)).build());
+    }
+
+    @Test
+    void persistsWebhookDelivery() {
+        WebhookDelivery value = delivery();
+        var time = com.zello.zello.domain.common.EntitySupport.now();
+        value.startProcessing(time, time.plusMinutes(1));
+        entityManager.flush();
+        value.complete(time.plusSeconds(1));
+        entityManager.flush();
+        entityManager.clear();
+        WebhookDelivery loaded = entityManager.find(WebhookDelivery.class, value.getId());
+        assertThat(loaded.getProcessingStatus()).isEqualTo(WebhookDelivery.ProcessingStatus.PROCESSED);
+        assertThat(loaded.getPayload()).containsEntry("action", "opened");
+    }
+
+    private WebhookDelivery delivery() {
+        return persist(WebhookDelivery.builder().installation(installation()).githubDeliveryId(java.util.UUID.randomUUID().toString())
+                .eventName("issues").payload(java.util.Map.of("action", "opened")).build());
     }
 
 }
