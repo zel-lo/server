@@ -14,6 +14,7 @@ import com.zello.zello.domain.pullrequest.PullRequest;
 import com.zello.zello.domain.issue.IssuePullRequest;
 import com.zello.zello.domain.pullrequest.PullRequestReviewer;
 import com.zello.zello.domain.pullrequest.PullRequestReview;
+import com.zello.zello.domain.patchnote.PatchNote;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -251,5 +252,20 @@ class EntityPersistenceTests {
         assertThat(entityManager.find(PullRequestReview.class, value.getId()).getReviewerAccount().getId()).isEqualTo(value.getReviewerAccountId());
     }
 
+
+    @Test
+    void persistsPatchNote() {
+        PatchNote value = patchNote(project());
+        Long version = value.getVersion();
+        value.publish(com.zello.zello.domain.common.EntitySupport.now());
+        entityManager.flush();
+        assertThat(value.getVersion()).isGreaterThan(version);
+        entityManager.clear();
+        assertThat(entityManager.find(PatchNote.class, value.getId()).getPublishedAt()).isNotNull();
+    }
+
+    private PatchNote patchNote(Project project) {
+        return persist(PatchNote.builder().project(project).authorUser(project.getOwnerUser()).title("Update").build());
+    }
 
 }
