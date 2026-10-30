@@ -10,6 +10,7 @@ import com.zello.zello.domain.repository.RepositorySyncRun;
 import com.zello.zello.domain.project.ProjectInvitation;
 import com.zello.zello.domain.github.WebhookDelivery;
 import com.zello.zello.domain.issue.Issue;
+import com.zello.zello.domain.pullrequest.PullRequest;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -200,6 +201,22 @@ class EntityPersistenceTests {
 
     private Issue issue(GitRepository repository) {
         return persist(Issue.builder().repository(repository).issueKey("ZELLO-" + IDS.incrementAndGet()).title("Work").build());
+    }
+
+    @Test
+    void persistsPullRequest() {
+        PullRequest value = pullRequest(repository());
+        Long version = value.getVersion();
+        value.updateTeamSummary("Team summary");
+        entityManager.flush();
+        assertThat(value.getVersion()).isGreaterThan(version);
+        entityManager.clear();
+        assertThat(entityManager.find(PullRequest.class, value.getId()).getTeamSummary()).isEqualTo("Team summary");
+    }
+
+    private PullRequest pullRequest(GitRepository repository) {
+        return persist(PullRequest.builder().repository(repository).authorAccount(account())
+                .title("Change").headBranch("feat/test").baseBranch("main").build());
     }
 
 }
