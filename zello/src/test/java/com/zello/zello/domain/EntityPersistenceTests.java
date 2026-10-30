@@ -13,6 +13,7 @@ import com.zello.zello.domain.issue.Issue;
 import com.zello.zello.domain.pullrequest.PullRequest;
 import com.zello.zello.domain.issue.IssuePullRequest;
 import com.zello.zello.domain.pullrequest.PullRequestReviewer;
+import com.zello.zello.domain.pullrequest.PullRequestReview;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -239,6 +240,15 @@ class EntityPersistenceTests {
         entityManager.flush();
         entityManager.clear();
         assertThat(entityManager.find(PullRequestReviewer.class, value.getId()).getRequestStatus()).isEqualTo(PullRequestReviewer.RequestStatus.COMPLETED);
+    }
+
+
+    @Test
+    void persistsPullRequestReview() {
+        PullRequestReview value = persist(PullRequestReview.builder().pullRequest(pullRequest(repository())).reviewerAccount(account())
+                .githubReviewId(IDS.incrementAndGet()).state("APPROVED").build());
+        entityManager.clear();
+        assertThat(entityManager.find(PullRequestReview.class, value.getId()).getReviewerAccount().getId()).isEqualTo(value.getReviewerAccountId());
     }
 
 
