@@ -20,6 +20,7 @@ import com.zello.zello.domain.deployment.BuildRun;
 import com.zello.zello.domain.deployment.Deployment;
 import com.zello.zello.domain.deployment.DeploymentPullRequest;
 import com.zello.zello.domain.activity.Activity;
+import com.zello.zello.domain.notification.Notification;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -335,5 +336,19 @@ class EntityPersistenceTests {
                 .eventKey("event:" + IDS.incrementAndGet()).eventType("ISSUE_CREATED").title("New work")
                 .occurredAt(com.zello.zello.domain.common.EntitySupport.now()).build());
     }
+
+    @Test
+    void persistsNotification() {
+        Project project = project();
+        Activity activity = activity(project);
+        Notification first = persist(Notification.builder().activity(activity).recipientMember(member(project, user())).title("Notice").build());
+        Notification second = persist(Notification.builder().activity(activity).recipientMember(member(project, user())).title("Notice").build());
+        first.markRead(com.zello.zello.domain.common.EntitySupport.now());
+        entityManager.flush();
+        entityManager.clear();
+        assertThat(entityManager.find(Notification.class, first.getId()).getReadAt()).isNotNull();
+        assertThat(entityManager.find(Notification.class, second.getId()).getReadAt()).isNull();
+    }
+
 
 }
