@@ -15,6 +15,7 @@ import com.zello.zello.domain.issue.IssuePullRequest;
 import com.zello.zello.domain.pullrequest.PullRequestReviewer;
 import com.zello.zello.domain.pullrequest.PullRequestReview;
 import com.zello.zello.domain.patchnote.PatchNote;
+import com.zello.zello.domain.patchnote.PatchNoteItem;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -267,5 +268,17 @@ class EntityPersistenceTests {
     private PatchNote patchNote(Project project) {
         return persist(PatchNote.builder().project(project).authorUser(project.getOwnerUser()).title("Update").build());
     }
+
+    @Test
+    void persistsPatchNoteItem() {
+        Project project = project();
+        GitRepository repository = repository(project);
+        PatchNoteItem value = persist(PatchNoteItem.builder().patchNote(patchNote(project)).repository(repository)
+                .pullRequest(pullRequest(repository)).category(PatchNoteItem.Category.FEATURE).title("Feature").build());
+        entityManager.clear();
+        PatchNoteItem loaded = entityManager.find(PatchNoteItem.class, value.getId());
+        assertThat(loaded.getPatchNote().getProjectId()).isEqualTo(loaded.getRepository().getProjectId());
+    }
+
 
 }
