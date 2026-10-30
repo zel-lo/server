@@ -4,6 +4,7 @@ import com.zello.zello.domain.github.GitHubAccount;
 import com.zello.zello.domain.user.User;
 import com.zello.zello.domain.project.Project;
 import com.zello.zello.domain.project.ProjectMember;
+import com.zello.zello.domain.github.GitHubInstallation;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -88,6 +89,18 @@ class EntityPersistenceTests {
 
     private ProjectMember member(Project project, User user) {
         return persist(ProjectMember.builder().project(project).user(user).build());
+    }
+
+    @Test
+    void persistsGitHubInstallation() {
+        GitHubInstallation value = installation();
+        entityManager.clear();
+        assertThat(entityManager.find(GitHubInstallation.class, value.getId()).getPermissions()).containsEntry("issues", "write");
+    }
+
+    private GitHubInstallation installation() {
+        return persist(GitHubInstallation.builder().ownerAccount(account())
+                .githubInstallationId(IDS.incrementAndGet()).permissions(java.util.Map.of("issues", "write")).build());
     }
 
 }
