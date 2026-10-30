@@ -7,6 +7,7 @@ import com.zello.zello.domain.project.ProjectMember;
 import com.zello.zello.domain.github.GitHubInstallation;
 import com.zello.zello.domain.repository.GitRepository;
 import com.zello.zello.domain.repository.RepositorySyncRun;
+import com.zello.zello.domain.project.ProjectInvitation;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -143,6 +144,24 @@ class EntityPersistenceTests {
     private RepositorySyncRun syncRun() {
         return persist(RepositorySyncRun.builder().repository(repository())
                 .runKind(RepositorySyncRun.RunKind.INITIAL).checkpoint(java.util.Map.of("nextPage", 2)).build());
+    }
+
+    @Test
+    void persistsProjectInvitation() {
+        ProjectInvitation value = invitation();
+        User recipient = user();
+        value.accept(recipient, com.zello.zello.domain.common.EntitySupport.now());
+        entityManager.flush();
+        entityManager.clear();
+        ProjectInvitation loaded = entityManager.find(ProjectInvitation.class, value.getId());
+        assertThat(loaded.getAcceptedByUser().getId()).isEqualTo(recipient.getId());
+        assertThat(loaded.getAcceptedAt()).isNotNull();
+    }
+
+    private ProjectInvitation invitation() {
+        Project project = project();
+        return persist(ProjectInvitation.builder().project(project).invitedByUser(project.getOwnerUser())
+                .tokenHash(java.util.UUID.randomUUID().toString()).expiresAt(com.zello.zello.domain.common.EntitySupport.now().plusDays(1)).build());
     }
 
 }
