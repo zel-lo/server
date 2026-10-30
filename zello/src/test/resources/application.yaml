@@ -1,4 +1,6 @@
 spring:
+  autoconfigure:
+    exclude: org.springframework.boot.session.jdbc.autoconfigure.JdbcSessionAutoConfiguration
   flyway:
     enabled: false
   datasource:
@@ -13,3 +15,6 @@ spring:
       hibernate:
         jdbc.time_zone: UTC
         hbm2ddl.halt_on_error: true
+zello:
+  session:
+    encryption-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
