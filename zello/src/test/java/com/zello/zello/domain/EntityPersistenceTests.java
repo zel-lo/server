@@ -11,6 +11,7 @@ import com.zello.zello.domain.project.ProjectInvitation;
 import com.zello.zello.domain.github.WebhookDelivery;
 import com.zello.zello.domain.issue.Issue;
 import com.zello.zello.domain.pullrequest.PullRequest;
+import com.zello.zello.domain.issue.IssuePullRequest;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -218,5 +219,16 @@ class EntityPersistenceTests {
         return persist(PullRequest.builder().repository(repository).authorAccount(account())
                 .title("Change").headBranch("feat/test").baseBranch("main").build());
     }
+
+    @Test
+    void persistsIssuePullRequest() {
+        GitRepository repository = repository();
+        IssuePullRequest value = persist(IssuePullRequest.builder().issue(issue(repository)).pullRequest(pullRequest(repository)).build());
+        entityManager.clear();
+        IssuePullRequest loaded = entityManager.find(IssuePullRequest.class, value.getId());
+        assertThat(loaded.getIssue().getRepositoryId()).isEqualTo(loaded.getPullRequest().getRepositoryId());
+        assertThat(loaded.getRepositoryId()).isEqualTo(repository.getId());
+    }
+
 
 }
