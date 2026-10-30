@@ -1,6 +1,7 @@
 package com.zello.zello.domain;
 
 import com.zello.zello.domain.github.GitHubAccount;
+import com.zello.zello.domain.user.User;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -41,6 +42,22 @@ class EntityPersistenceTests {
         long value = IDS.incrementAndGet();
         return persist(GitHubAccount.builder().githubId(value).login("user" + value)
                 .accountType(GitHubAccount.AccountType.USER).build());
+    }
+
+    @Test
+    void persistsUser() {
+        User value = user();
+        value.withdraw(com.zello.zello.domain.common.EntitySupport.now());
+        entityManager.flush();
+        entityManager.clear();
+        User loaded = entityManager.find(User.class, value.getId());
+        assertThat(loaded.getStatus()).isEqualTo(User.Status.WITHDRAWN);
+        assertThat(loaded.getWithdrawnAt()).isNotNull();
+        assertThat(loaded.getGithubAccount().getId()).isEqualTo(value.getGithubAccountId());
+    }
+
+    private User user() {
+        return persist(User.builder().githubAccount(account()).build());
     }
 
 }
