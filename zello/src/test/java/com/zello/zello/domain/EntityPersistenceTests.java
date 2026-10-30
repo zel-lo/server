@@ -1,5 +1,6 @@
 package com.zello.zello.domain;
 
+import com.zello.zello.domain.github.GitHubAccount;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @Transactional
 class EntityPersistenceTests {
+    private static final java.util.concurrent.atomic.AtomicLong IDS = new java.util.concurrent.atomic.AtomicLong(100);
+
     @PersistenceContext
     private EntityManager entityManager;
 
@@ -24,4 +27,20 @@ class EntityPersistenceTests {
         entityManager.flush();
         return entity;
     }
+    @Test
+    void persistsGitHubAccount() {
+        GitHubAccount value = account();
+        entityManager.clear();
+        GitHubAccount loaded = entityManager.find(GitHubAccount.class, value.getId());
+        assertThat(loaded.getGithubId()).isEqualTo(value.getGithubId());
+        assertThat(loaded.getCreatedAt()).isNotNull();
+        assertThat(loaded.getUpdatedAt()).isNotNull();
+    }
+
+    private GitHubAccount account() {
+        long value = IDS.incrementAndGet();
+        return persist(GitHubAccount.builder().githubId(value).login("user" + value)
+                .accountType(GitHubAccount.AccountType.USER).build());
+    }
+
 }
