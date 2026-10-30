@@ -6,6 +6,7 @@ import com.zello.zello.domain.project.Project;
 import com.zello.zello.domain.project.ProjectMember;
 import com.zello.zello.domain.github.GitHubInstallation;
 import com.zello.zello.domain.repository.GitRepository;
+import com.zello.zello.domain.repository.RepositorySyncRun;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -123,6 +124,25 @@ class EntityPersistenceTests {
         return persist(GitRepository.builder().project(project).installation(installation())
                 .githubRepoId(IDS.incrementAndGet()).ownerLogin("team").name("client")
                 .htmlUrl("https://example.test/team/client").defaultBranch("main").privateRepository(true).build());
+    }
+
+    @Test
+    void persistsRepositorySyncRun() {
+        RepositorySyncRun value = syncRun();
+        var time = com.zello.zello.domain.common.EntitySupport.now();
+        value.start(time);
+        entityManager.flush();
+        value.complete(time.plusSeconds(1));
+        entityManager.flush();
+        entityManager.clear();
+        RepositorySyncRun loaded = entityManager.find(RepositorySyncRun.class, value.getId());
+        assertThat(loaded.getStatus()).isEqualTo(RepositorySyncRun.Status.SUCCEEDED);
+        assertThat(loaded.getCheckpoint()).containsEntry("nextPage", 2);
+    }
+
+    private RepositorySyncRun syncRun() {
+        return persist(RepositorySyncRun.builder().repository(repository())
+                .runKind(RepositorySyncRun.RunKind.INITIAL).checkpoint(java.util.Map.of("nextPage", 2)).build());
     }
 
 }
