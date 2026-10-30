@@ -73,6 +73,14 @@ public class User extends IdentityEntity {
         this.status = Status.WITHDRAWN;
     }
 
+    public void recordLogin(String email, LocalDateTime loggedInAt) {
+        if (status != Status.ACTIVE) {
+            throw new IllegalStateException("Inactive user cannot log in");
+        }
+        this.email = email;
+        this.lastLoginAt = EntitySupport.required(loggedInAt, "loggedInAt");
+    }
+
     public void changeTheme(String theme) {
         if (!java.util.Set.of("light", "dark").contains(theme)) {
             throw new IllegalArgumentException("Unknown theme");
