@@ -82,6 +82,7 @@ public class SecurityConfiguration {
                 .requestCache(cache -> cache.requestCache(new NullRequestCache()))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/api/auth/status", "/api/auth/csrf", "/oauth2/**", "/login/oauth2/**",
+                                "/api/github/installations/callback",
                                 "/error", "/actuator/health", "/actuator/health/**").permitAll()
                         .anyRequest().authenticated())
                 .exceptionHandling(exceptions -> exceptions

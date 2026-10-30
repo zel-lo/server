@@ -47,6 +47,13 @@ public class GitHubController {
                 repo.owner().login() + "/" + repo.name(), repo.privateRepository(), repo.archived())).toList(), result.hasNext(), result.page()));
     }
 
+    @GetMapping("/installations/{installationId}")
+    ResponseEntity<InstallationView> installation(Authentication authentication, HttpServletRequest request,
+                                                 @PathVariable long installationId) {
+        var item = gateway.requireInstallation(tokens.token(authentication, request), installationId);
+        return ok(new InstallationView(Long.toString(item.id()), item.account().login(), item.account().type()));
+    }
+
     private <T> ResponseEntity<T> ok(T body) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body); }
 
     public record Configuration(String installUrl) { }

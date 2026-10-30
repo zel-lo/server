@@ -27,7 +27,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest
+@SpringBootTest(properties = "zello.github.app-slug=test-app")
 @AutoConfigureMockMvc
 class RepositoryConnectionTests {
     private static final AtomicLong IDS = new AtomicLong(70_000_000);
@@ -58,6 +58,30 @@ class RepositoryConnectionTests {
         projectId = Long.parseLong(JsonPath.read(result.getResponse().getContentAsString(), "$.id"));
         when(github.verify(anyString(), eq(installationId), eq(githubRepoId))).thenReturn(verified("Organization"));
         when(github.accessibleRepositoryIds(anyString(), eq(installationId))).thenReturn(Set.of(Long.toString(githubRepoId)));
+    }
+
+    @Test
+    void githubConnectionStartsWithCsrfAndReturnsToTheSameAuthorizedProject() throws Exception {
+        var session = new org.springframework.mock.web.MockHttpSession();
+        String startPath = "/api/projects/" + projectId + "/github/connection";
+        mvc.perform(post(startPath).with(as(owner))).andExpect(status().isForbidden());
+        var start = mvc.perform(post(startPath).with(as(owner)).with(csrf()).session(session))
+                .andExpect(status().isOk()).andReturn();
+        String url = JsonPath.read(start.getResponse().getContentAsString(), "$.authorizationUrl");
+        assertThat(url).startsWith("https://github.com/apps/test-app/installations/new?state=");
+        String state = url.substring(url.indexOf("state=") + 6);
+        when(github.requireInstallation(anyString(), eq(installationId))).thenReturn(verified("Organization").installation());
+        mvc.perform(get("/api/github/installations/callback").with(as(owner)).session(session)
+                        .param("state", state).param("installation_id", Long.toString(installationId)))
+                .andExpect(status().isSeeOther()).andExpect(redirectedUrl("http://127.0.0.1:5173/#/settings?tab=repositories&github_connection=ready&project=" + projectId + "&installation=" + installationId));
+        assertThat(repositories.findByProjectIdAndGithubRepoId(projectId, githubRepoId)).isEmpty();
+    }
+
+    @Test
+    void anonymousSetupCallbackRedirectsToLoginWithoutAcceptingAnInstallationId() throws Exception {
+        mvc.perform(get("/api/github/installations/callback").param("installation_id", "999"))
+                .andExpect(status().isSeeOther()).andExpect(redirectedUrl("http://127.0.0.1:5173/#/login?error=expired"));
+        verifyNoInteractions(github);
     }
 
     @Test
