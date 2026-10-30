@@ -30,6 +30,7 @@ GitHub 사용자 승인 → 서버의 code 교환·GitHub /user 조회 → 회�
 - GITHUB_CLIENT_ID와 GITHUB_CLIENT_SECRET
 - DB_URL·DB_USERNAME·DB_PASSWORD: 실제 MySQL의 zello 개발 DB와 계정
 - FRONTEND_BASE_URL·GITHUB_REDIRECT_URI: 위 표와 같은 주소
+- SESSION_ENCRYPTION_KEY: `openssl rand -base64 32`로 한 번 생성한 키. 서버 재시작 시 같은 값을 유지한다.
 
 Client ID는 공개 식별자지만 Secret은 서버 `.env`에만 저장합니다. 실제 `.env`는 Git 추적에서 제외되며 프론트 환경 변수에 Secret을 넣지 않습니다. GITHUB_LOGIN_ENABLED=false이면 서버는 가짜 인증을 제공하지 않고 로그인 시작 요청에 503을 반환합니다.
 
@@ -43,7 +44,7 @@ CREATE USER 'zello'@'localhost' IDENTIFIED BY 'replace-with-your-local-password'
 GRANT ALL PRIVILEGES ON zello.* TO 'zello'@'localhost';
 ```
 
-이미 DB·계정이 있으면 재생성하지 않습니다. 첫 실행 시 Flyway의 V1 마이그레이션이 21개 테이블을 만들고 Hibernate validate가 매핑을 확인합니다. 기존의 테이블이 있는 DB에 자동 baseline·초기화·데이터 삭제를 수행하지 않습니다. 개발용 DB를 새로 준비하거나 기존 스키마의 마이그레이션 여부를 먼저 확인해야 합니다.
+이미 DB·계정이 있으면 재생성하지 않습니다. 첫 실행 시 Flyway V1이 업무용 21개 테이블을 만들고 V2가 Spring Session의 세션·속성 테이블을 추가합니다. Hibernate validate가 엔티티 매핑을 확인합니다. 기존의 테이블이 있는 DB에 자동 baseline·초기화·데이터 삭제를 수행하지 않습니다. 개발용 DB를 새로 준비하거나 기존 스키마의 마이그레이션 여부를 먼저 확인해야 합니다.
 
 백엔드(Java 25 toolchain):
 
@@ -76,16 +77,16 @@ npm run dev -- --port 5173 --strictPort
 
 미인증 API 호출은 JSON 401이며 GitHub로 강제 리다이렉트하지 않습니다. 로그아웃은 CSRF 토큰 없이 POST하면 403이고 GET으로는 실행되지 않습니다. 사용자 ID는 요청 본문에서 신뢰하지 않고 인증 principal에서 결정합니다.
 
-React의 /auth/callback 화면이 /api/me를 조회한 뒤 워크스페이스로 이동합니다. 샘플 프로젝트의 작업 데이터는 계속 샘플이며, 로그인한 회원의 이름·GitHub 로그인과 로그아웃 버튼을 프로필에 표시합니다. 회원가입과 로그인은 같은 OAuth 흐름으로 처리하고 GitHub 고유 ID로 재로그인 회원을 식별합니다. 공개 이메일이 없어도 가입할 수 있습니다.
+React의 /auth/callback 화면이 /api/me를 조회한 뒤 워크스페이스로 이동합니다. 홈에는 실제 사용자 이름·로그인됨·워크스페이스 이동을 표시하고, 로그인한 사용자의 로그인 페이지 재방문은 워크스페이스로 보냅니다. GitHub 권한을 갱신하는 명시적 재로그인은 예외로 허용합니다. 탭 재활성화 시 서버 세션을 다시 확인하고 다른 탭의 로그아웃도 반영합니다. 샘플 프로젝트의 작업 데이터는 계속 샘플이며, 로그인한 회원의 이름·GitHub 로그인과 로그아웃 버튼을 프로필에 표시합니다. 회원가입과 로그인은 같은 OAuth 흐름으로 처리하고 GitHub 고유 ID로 재로그인 회원을 식별합니다. 공개 이메일이 없어도 가입할 수 있습니다.
 
 로그인 후 회원이 탈퇴 상태가 되면 후속 요청에서 세션을 종료합니다. 회원 탈퇴·프로젝트 소유권 이전 API 자체는 이번 범위에 포함하지 않았습니다.
 
 ## 5. 세션과 토큰
 
-- HttpOnly·SameSite=Lax 쿠키, 기본 30분 서버 세션을 사용합니다. 로그인 성공 시 세션 ID를 교체합니다.
+- HttpOnly·SameSite=Lax의 JSESSIONID 쿠키와 기본 30분 MySQL 기반 서버 세션을 사용합니다. 로그인 성공 시 세션 ID를 교체하고 로그아웃하면 DB 세션을 삭제합니다.
 - OAuth state·PKCE·토큰 교환은 Spring Security가 처리합니다. 승인 시작과 code 교환을 프론트에서 직접 구현하지 않습니다.
-- GitHub access/refresh token은 authorized client로 **서버 세션에만** 저장하고 프론트 응답·URL·localStorage로 전달하지 않습니다. 세션/서버 재시작 후에는 재로그인이 필요합니다.
-- 현재 기능은 로그인 직후 사용자 조회만 수행합니다. 향후 장시간 GitHub API 호출을 추가할 때 토큰 만료·refresh·재승인과 다중 서버 세션 저장을 별도로 구현해야 합니다.
+- GitHub access/refresh token은 authorized client로 **MySQL의 서버 세션에 암호화하여** 저장하고 프론트 응답·URL·localStorage로 전달하지 않습니다. 세션 속성은 AES-256-GCM으로 보호하며 키는 SESSION_ENCRYPTION_KEY에서 읽습니다. 같은 DB와 키를 사용하는 서버를 재시작해도 유효한 세션은 유지됩니다. 키를 변경하거나 유실하면 기존 세션을 읽을 수 없으므로 키를 안정적으로 관리해야 합니다.
+- 저장소 연결은 로그인한 사용자의 GitHub 토큰을 사용합니다. 토큰 만료·취소 시 다시 로그인하도록 안내하며 자동 refresh는 후속 구현입니다. 로그인 유지 시간과 GitHub 토큰 유효 시간은 서로 다릅니다.
 - 성공·실패 복귀 URL은 서버 설정으로 고정합니다. 사용자 입력 returnTo나 GitHub 오류 설명을 그대로 URL에 넣지 않습니다.
 - CORS는 설정한 프론트 origin만 credential 요청을 허용합니다. CSRF 보호는 켜 둡니다.
 
@@ -98,4 +99,4 @@ React의 /auth/callback 화면이 /api/me를 조회한 뒤 워크스페이스로
 
 실제 GitHub에 요청하지 않는 통합 테스트는 code 교환과 원본 사용자 응답만 테스트 대역으로 바꾸고, 실제 Spring Security OAuth 필터·state·PKCE·회원 DB·서버 세션·CSRF·로그아웃을 실행합니다. 첫 가입·재로그인·이름 변경·이메일 비공개·취소·state 위조·탈퇴 계정·CORS를 확인합니다. 이는 실제 앱 자격 증명으로 브라우저 승인한 결과와 구분합니다.
 
-테스트의 H2 설정은 테스트 클래스패스에만 있으며 Flyway를 끄고 Hibernate create-drop을 사용합니다. 앱은 MySQL과 Flyway를 사용합니다. 실제 GitHub 승인과 MySQL 실행 결과는 로컬 Secret·DB 설정을 완료한 뒤 별도로 확인해야 합니다.
+테스트의 H2 설정은 테스트 클래스패스에만 있으며 Flyway를 끄고 Hibernate create-drop을 사용합니다. 앱은 MySQL과 Flyway를 사용합니다. 일반 MockMvc 테스트는 메모리 세션을 격리해 사용하고, PersistentLoginTests는 Spring Session JDBC를 실제 활성화하여 OAuth 이후 쿠키·DB 저장·새 repository에서 복원·만료·로그아웃 삭제를 검증합니다. 세션 속성의 원문 토큰 미노출과 변조 거부도 확인합니다. 실제 GitHub 승인과 서버 재시작 확인은 로컬 App 자격 증명이 있는 환경에서 별도로 수행합니다.
