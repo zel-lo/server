@@ -19,6 +19,7 @@ import com.zello.zello.domain.patchnote.PatchNoteItem;
 import com.zello.zello.domain.deployment.BuildRun;
 import com.zello.zello.domain.deployment.Deployment;
 import com.zello.zello.domain.deployment.DeploymentPullRequest;
+import com.zello.zello.domain.activity.Activity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -318,5 +319,21 @@ class EntityPersistenceTests {
         assertThat(loaded.getDeployment().getRepositoryId()).isEqualTo(loaded.getPullRequest().getRepositoryId());
     }
 
+
+    @Test
+    void persistsActivity() {
+        Activity value = activity(project());
+        entityManager.clear();
+        Activity loaded = entityManager.find(Activity.class, value.getId());
+        assertThat(loaded.getIssue().getRepositoryId()).isEqualTo(loaded.getRepositoryId());
+        assertThat(loaded.getRepository().getProjectId()).isEqualTo(loaded.getProjectId());
+    }
+
+    private Activity activity(Project project) {
+        GitRepository repository = repository(project);
+        return persist(Activity.builder().project(project).repository(repository).issue(issue(repository))
+                .eventKey("event:" + IDS.incrementAndGet()).eventType("ISSUE_CREATED").title("New work")
+                .occurredAt(com.zello.zello.domain.common.EntitySupport.now()).build());
+    }
 
 }
