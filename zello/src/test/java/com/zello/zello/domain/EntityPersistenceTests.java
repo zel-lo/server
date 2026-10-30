@@ -18,6 +18,7 @@ import com.zello.zello.domain.patchnote.PatchNote;
 import com.zello.zello.domain.patchnote.PatchNoteItem;
 import com.zello.zello.domain.deployment.BuildRun;
 import com.zello.zello.domain.deployment.Deployment;
+import com.zello.zello.domain.deployment.DeploymentPullRequest;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -306,5 +307,16 @@ class EntityPersistenceTests {
         return persist(Deployment.builder().repository(repository()).githubDeploymentId(IDS.incrementAndGet())
                 .environment("production").commitSha("a".repeat(40)).build());
     }
+
+    @Test
+    void persistsDeploymentPullRequest() {
+        Deployment deployment = deployment();
+        DeploymentPullRequest value = persist(DeploymentPullRequest.builder().deployment(deployment)
+                .pullRequest(pullRequest(deployment.getRepository())).build());
+        entityManager.clear();
+        DeploymentPullRequest loaded = entityManager.find(DeploymentPullRequest.class, value.getId());
+        assertThat(loaded.getDeployment().getRepositoryId()).isEqualTo(loaded.getPullRequest().getRepositoryId());
+    }
+
 
 }
