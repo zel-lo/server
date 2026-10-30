@@ -1,0 +1,639 @@
+Table "github_accounts" {
+  "id" BIGINT [pk, not null, increment]
+  "github_id" BIGINT [not null]
+  "login" VARCHAR(100) [not null]
+  "display_name" VARCHAR(100)
+  "avatar_url" VARCHAR(2048)
+  "account_type" VARCHAR(20) [not null]
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `account_type IN ('USER', 'BOT', 'ORGANIZATION')` [name: 'ck_github_accounts_type']
+  }
+
+  Indexes {
+    github_id [unique, name: "uk_github_accounts_github_id"]
+  }
+}
+
+Table "users" {
+  "id" BIGINT [pk, not null, increment]
+  "github_account_id" BIGINT [not null]
+  "email" VARCHAR(320)
+  "theme" VARCHAR(20) [not null]
+  "status" VARCHAR(20) [not null, default: 'ACTIVE']
+  "withdrawn_at" DATETIME(6)
+  "last_login_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `status IN ('ACTIVE', 'WITHDRAWN')` [name: 'ck_users_status']
+    `(status = 'ACTIVE' AND withdrawn_at IS NULL) OR (status = 'WITHDRAWN' AND withdrawn_at IS NOT NULL)` [name: 'ck_users_withdrawal']
+  }
+
+  Indexes {
+    github_account_id [unique, name: "uk_users_github_account"]
+  }
+}
+
+Table "projects" {
+  "id" BIGINT [pk, not null, increment]
+  "owner_user_id" BIGINT [not null]
+  "name" VARCHAR(100) [not null]
+  "goal" TEXT
+  "description" TEXT
+  "timezone" VARCHAR(64) [not null]
+  "sync_interval_minutes" INT [not null]
+  "archived_at" DATETIME(6)
+  "version" BIGINT [not null, default: 0]
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `sync_interval_minutes > 0` [name: 'ck_projects_sync_interval']
+    `version >= 0` [name: 'ck_projects_version']
+  }
+}
+
+Table "project_members" {
+  "project_id" BIGINT [not null]
+  "user_id" BIGINT [not null]
+  "role" VARCHAR(20) [not null]
+  "job_title" VARCHAR(100)
+  "joined_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "left_at" DATETIME(6)
+  "notify_team_updates" BOOLEAN [not null]
+  "notify_deployments" BOOLEAN [not null]
+  "weekly_summary_enabled" BOOLEAN [not null]
+
+  Checks {
+    `role IN ('ADMIN', 'MEMBER', 'VIEWER')` [name: 'ck_project_members_role']
+  }
+
+  Indexes {
+    (project_id, user_id) [pk]
+    (user_id, left_at, project_id) [name: "idx_project_members_user_active"]
+  }
+}
+
+Table "github_installations" {
+  "id" BIGINT [pk, not null, increment]
+  "github_installation_id" BIGINT [not null]
+  "owner_account_id" BIGINT [not null]
+  "status" VARCHAR(20) [not null]
+  "permissions" JSON [not null]
+  "installed_at" DATETIME(6) [not null]
+  "suspended_at" DATETIME(6)
+  "removed_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')` [name: 'ck_github_installations_status']
+  }
+
+  Indexes {
+    github_installation_id [unique, name: "uk_github_installations_github_id"]
+  }
+}
+
+Table "repositories" {
+  "id" BIGINT [pk, not null, increment]
+  "project_id" BIGINT [not null]
+  "installation_id" BIGINT [not null]
+  "github_repo_id" BIGINT [not null]
+  "owner_login" VARCHAR(100) [not null]
+  "name" VARCHAR(100) [not null]
+  "html_url" VARCHAR(2048) [not null]
+  "description" TEXT
+  "primary_language" VARCHAR(100)
+  "default_branch" VARCHAR(255) [not null]
+  "is_private" BOOLEAN [not null]
+  "connection_status" VARCHAR(30) [not null]
+  "initial_sync_completed_at" DATETIME(6)
+  "last_synced_at" DATETIME(6)
+  "last_sync_error" TEXT
+  "disconnected_at" DATETIME(6)
+  "github_updated_at" DATETIME(6)
+  "last_fetched_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `connection_status IN ('PENDING', 'SYNCING', 'CONNECTED', 'PARTIAL_FAILURE', 'AUTH_REQUIRED', 'DISCONNECTED')` [name: 'ck_repositories_connection_status']
+  }
+
+  Indexes {
+    (id, project_id) [unique, name: "uk_repositories_scope"]
+    (project_id, github_repo_id) [unique, name: "uk_repositories_project_github"]
+  }
+}
+
+Table "repository_sync_runs" {
+  "id" BIGINT [pk, not null, increment]
+  "repository_id" BIGINT [not null]
+  "retry_of_id" BIGINT
+  "run_kind" VARCHAR(20) [not null]
+  "sync_scope" VARCHAR(30) [not null]
+  "status" VARCHAR(20) [not null, default: 'PENDING']
+  "attempt_no" INT [not null, default: 1]
+  "emit_notifications" BOOLEAN [not null, default: FALSE]
+  "source_since_at" DATETIME(6)
+  "checkpoint" JSON
+  "items_processed" BIGINT [not null, default: 0]
+  "started_at" DATETIME(6)
+  "heartbeat_at" DATETIME(6)
+  "finished_at" DATETIME(6)
+  "next_retry_at" DATETIME(6)
+  "last_error" TEXT
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `run_kind IN ('INITIAL', 'PERIODIC', 'MANUAL')` [name: 'ck_repository_sync_runs_kind']
+    `sync_scope IN ('ALL', 'ISSUES', 'PULL_REQUESTS', 'REVIEWS', 'BUILDS', 'DEPLOYMENTS')` [name: 'ck_repository_sync_runs_scope']
+    `status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')` [name: 'ck_repository_sync_runs_status']
+    `attempt_no > 0 AND items_processed >= 0` [name: 'ck_repository_sync_runs_counts']
+    `run_kind <> 'INITIAL' OR emit_notifications = FALSE` [name: 'ck_repository_sync_runs_initial']
+    `(status = 'PENDING' AND started_at IS NULL AND finished_at IS NULL)
+        OR (status = 'RUNNING' AND started_at IS NOT NULL AND finished_at IS NULL)
+        OR (status IN ('SUCCEEDED', 'FAILED') AND started_at IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= started_at)` [name: 'ck_repository_sync_runs_lifecycle']
+  }
+
+  Indexes {
+    (id, repository_id) [unique, name: "uk_repository_sync_runs_scope"]
+    (repository_id, created_at, id) [name: "idx_repository_sync_runs_repository_created"]
+    (status, next_retry_at, id) [name: "idx_repository_sync_runs_status_retry"]
+  }
+}
+
+Table "project_invitations" {
+  "id" BIGINT [pk, not null, increment]
+  "project_id" BIGINT [not null]
+  "invited_by_user_id" BIGINT [not null]
+  "target_account_id" BIGINT
+  "accepted_by_user_id" BIGINT
+  "token_hash" VARCHAR(64) [not null]
+  "granted_role" VARCHAR(20) [not null]
+  "expires_at" DATETIME(6) [not null]
+  "accepted_at" DATETIME(6)
+  "revoked_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `granted_role IN ('ADMIN', 'MEMBER', 'VIEWER')` [name: 'ck_project_invitations_role']
+    `(accepted_at IS NULL AND accepted_by_user_id IS NULL) OR (accepted_at IS NOT NULL AND accepted_by_user_id IS NOT NULL)` [name: 'ck_project_invitations_acceptance']
+    `accepted_at IS NULL OR revoked_at IS NULL` [name: 'ck_project_invitations_terminal']
+    `expires_at > created_at` [name: 'ck_project_invitations_expiry']
+    `accepted_at IS NULL OR (accepted_at >= created_at AND accepted_at < expires_at)` [name: 'ck_project_invitations_accepted_at']
+  }
+
+  Indexes {
+    token_hash [unique, name: "uk_project_invitations_token_hash"]
+  }
+}
+
+Table "webhook_deliveries" {
+  "id" BIGINT [pk, not null, increment]
+  "github_delivery_id" VARCHAR(64) [not null]
+  "installation_id" BIGINT
+  "event_name" VARCHAR(100) [not null]
+  "action" VARCHAR(100)
+  "payload" JSON [not null]
+  "processing_status" VARCHAR(20) [not null]
+  "attempt_count" INT [not null]
+  "received_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "processing_started_at" DATETIME(6)
+  "lease_expires_at" DATETIME(6)
+  "next_retry_at" DATETIME(6)
+  "processed_at" DATETIME(6)
+  "last_error" TEXT
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `processing_status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED')` [name: 'ck_webhook_deliveries_status']
+    `attempt_count >= 0` [name: 'ck_webhook_deliveries_attempts']
+    `(processing_status = 'PROCESSED' AND processed_at IS NOT NULL) OR (processing_status <> 'PROCESSED' AND processed_at IS NULL)` [name: 'ck_webhook_deliveries_processed']
+    `processing_status <> 'PROCESSING' OR (processing_started_at IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > processing_started_at)` [name: 'ck_webhook_deliveries_lease']
+  }
+
+  Indexes {
+    github_delivery_id [unique, name: "uk_webhook_deliveries_github_id"]
+    (processing_status, next_retry_at, received_at) [name: "idx_webhook_deliveries_processing"]
+  }
+}
+
+Table "issues" {
+  "id" BIGINT [pk, not null, increment]
+  "issue_key" VARCHAR(32) [not null]
+  "repository_id" BIGINT [not null]
+  "author_account_id" BIGINT
+  "assignee_account_id" BIGINT
+  "created_by_user_id" BIGINT
+  "github_issue_id" BIGINT
+  "github_number" INT
+  "github_state" VARCHAR(20)
+  "github_url" VARCHAR(2048)
+  "title" VARCHAR(255) [not null]
+  "description" TEXT
+  "acceptance_criteria" TEXT
+  "work_status" VARCHAR(20) [not null]
+  "priority" VARCHAR(20) [not null]
+  "source_type" VARCHAR(20) [not null]
+  "meeting_date" DATE
+  "meeting_context" TEXT
+  "publish_status" VARCHAR(20) [not null]
+  "publish_request_key" VARCHAR(64)
+  "last_publish_error" TEXT
+  "github_updated_at" DATETIME(6)
+  "last_fetched_at" DATETIME(6)
+  "version" BIGINT [not null, default: 0]
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `work_status IN ('BACKLOG', 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'DONE')` [name: 'ck_issues_work_status']
+    `priority IN ('HIGH', 'MEDIUM', 'LOW')` [name: 'ck_issues_priority']
+    `source_type IN ('DAILY', 'WEEKLY', 'REQUEST', 'GITHUB')` [name: 'ck_issues_source_type']
+    `publish_status IN ('LOCAL', 'PENDING', 'PUBLISHED', 'FAILED', 'UNKNOWN')` [name: 'ck_issues_publish_status']
+    `source_type NOT IN ('DAILY', 'WEEKLY') OR meeting_date IS NOT NULL` [name: 'ck_issues_meeting_date']
+    `(github_issue_id IS NULL AND github_number IS NULL) OR (github_issue_id IS NOT NULL AND github_number IS NOT NULL AND github_issue_id > 0 AND github_number > 0)` [name: 'ck_issues_external_identity']
+    `publish_status <> 'PUBLISHED' OR (github_issue_id IS NOT NULL AND github_number IS NOT NULL AND github_state IS NOT NULL)` [name: 'ck_issues_published']
+    `github_state IS NULL OR github_state IN ('OPEN', 'CLOSED')` [name: 'ck_issues_github_state']
+    `version >= 0` [name: 'ck_issues_version']
+  }
+
+  Indexes {
+    (id, repository_id) [unique, name: "uk_issues_scope"]
+    issue_key [unique, name: "uk_issues_key"]
+    publish_request_key [unique, name: "uk_issues_publish_request"]
+    (repository_id, github_issue_id) [unique, name: "uk_issues_repository_github_id"]
+    (repository_id, github_number) [unique, name: "uk_issues_repository_number"]
+    (repository_id, work_status, priority) [name: "idx_issues_repository_status_priority"]
+    (assignee_account_id, work_status, repository_id) [name: "idx_issues_assignee_status_repository"]
+    (repository_id, source_type, meeting_date) [name: "idx_issues_repository_source_meeting"]
+  }
+}
+
+Table "pull_requests" {
+  "id" BIGINT [pk, not null, increment]
+  "repository_id" BIGINT [not null]
+  "author_account_id" BIGINT
+  "created_by_user_id" BIGINT
+  "github_pr_id" BIGINT
+  "github_number" INT
+  "github_url" VARCHAR(2048)
+  "title" VARCHAR(255) [not null]
+  "body" TEXT
+  "team_summary" TEXT
+  "head_branch" VARCHAR(255) [not null]
+  "base_branch" VARCHAR(255) [not null]
+  "head_sha" VARCHAR(64)
+  "merge_commit_sha" VARCHAR(64)
+  "state" VARCHAR(20) [not null]
+  "is_draft" BOOLEAN [not null]
+  "review_decision" VARCHAR(30) [not null]
+  "changed_files" INT
+  "additions" INT
+  "deletions" INT
+  "commit_count" INT
+  "opened_at" DATETIME(6)
+  "closed_at" DATETIME(6)
+  "merged_at" DATETIME(6)
+  "publish_status" VARCHAR(20) [not null]
+  "publish_request_key" VARCHAR(64)
+  "last_publish_error" TEXT
+  "github_updated_at" DATETIME(6)
+  "last_fetched_at" DATETIME(6)
+  "version" BIGINT [not null, default: 0]
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `state IN ('OPEN', 'CLOSED', 'MERGED')` [name: 'ck_pull_requests_state']
+    `review_decision IN ('UNKNOWN', 'PENDING', 'APPROVED', 'CHANGES_REQUESTED')` [name: 'ck_pull_requests_review_decision']
+    `publish_status IN ('LOCAL', 'PENDING', 'PUBLISHED', 'FAILED', 'UNKNOWN')` [name: 'ck_pull_requests_publish_status']
+    `(github_pr_id IS NULL AND github_number IS NULL) OR (github_pr_id IS NOT NULL AND github_number IS NOT NULL AND github_pr_id > 0 AND github_number > 0)` [name: 'ck_pull_requests_external_identity']
+    `publish_status <> 'PUBLISHED' OR (github_pr_id IS NOT NULL AND github_number IS NOT NULL)` [name: 'ck_pull_requests_published']
+    `(state = 'MERGED' AND merged_at IS NOT NULL AND is_draft = FALSE AND publish_status = 'PUBLISHED') OR (state <> 'MERGED' AND merged_at IS NULL)` [name: 'ck_pull_requests_merge']
+    `version >= 0` [name: 'ck_pull_requests_version']
+  }
+
+  Indexes {
+    (id, repository_id) [unique, name: "uk_pull_requests_scope"]
+    publish_request_key [unique, name: "uk_pull_requests_publish_request"]
+    (repository_id, github_pr_id) [unique, name: "uk_pull_requests_repository_github_id"]
+    (repository_id, github_number) [unique, name: "uk_pull_requests_repository_number"]
+    (repository_id, state, is_draft, updated_at) [name: "idx_pull_requests_repository_state_updated"]
+  }
+}
+
+Table "issue_pull_requests" {
+  "repository_id" BIGINT [not null]
+  "issue_id" BIGINT [not null]
+  "pull_request_id" BIGINT [not null]
+  "created_by_user_id" BIGINT
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Indexes {
+    (issue_id, pull_request_id) [pk]
+    (pull_request_id, issue_id) [name: "idx_issue_pull_requests_pr_issue"]
+  }
+}
+
+Table "pull_request_reviewers" {
+  "pull_request_id" BIGINT [not null]
+  "reviewer_account_id" BIGINT [not null]
+  "request_status" VARCHAR(20) [not null]
+  "requested_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `request_status IN ('REQUESTED', 'COMPLETED', 'REMOVED')` [name: 'ck_pull_request_reviewers_status']
+  }
+
+  Indexes {
+    (pull_request_id, reviewer_account_id) [pk]
+    (reviewer_account_id, request_status, pull_request_id) [name: "idx_pull_request_reviewers_account_status"]
+  }
+}
+
+Table "pull_request_reviews" {
+  "id" BIGINT [pk, not null, increment]
+  "pull_request_id" BIGINT [not null]
+  "reviewer_account_id" BIGINT
+  "github_review_id" BIGINT [not null]
+  "state" VARCHAR(30) [not null]
+  "body" TEXT
+  "commit_sha" VARCHAR(64)
+  "submitted_at" DATETIME(6)
+  "last_fetched_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Indexes {
+    (pull_request_id, github_review_id) [unique, name: "uk_pull_request_reviews_pr_github"]
+  }
+}
+
+Table "patch_notes" {
+  "id" BIGINT [pk, not null, increment]
+  "project_id" BIGINT [not null]
+  "author_user_id" BIGINT [not null]
+  "title" VARCHAR(255) [not null]
+  "subtitle" VARCHAR(255)
+  "summary" TEXT
+  "version_label" VARCHAR(100)
+  "status" VARCHAR(20) [not null]
+  "published_at" DATETIME(6)
+  "version" BIGINT [not null, default: 0]
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `status IN ('DRAFT', 'PUBLISHED')` [name: 'ck_patch_notes_status']
+    `(status = 'DRAFT' AND published_at IS NULL) OR (status = 'PUBLISHED' AND published_at IS NOT NULL)` [name: 'ck_patch_notes_publication']
+    `version >= 0` [name: 'ck_patch_notes_version']
+  }
+
+  Indexes {
+    (id, project_id) [unique, name: "uk_patch_notes_scope"]
+    (project_id, status, published_at) [name: "idx_patch_notes_project_status_published"]
+  }
+}
+
+Table "patch_note_items" {
+  "project_id" BIGINT [not null]
+  "repository_id" BIGINT [not null]
+  "patch_note_id" BIGINT [not null]
+  "pull_request_id" BIGINT [not null]
+  "category" VARCHAR(20) [not null]
+  "title" VARCHAR(255) [not null]
+  "summary" TEXT
+  "sort_order" INT [not null]
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `category IN ('FEATURE', 'FIX', 'IMPROVE')` [name: 'ck_patch_note_items_category']
+  }
+
+  Indexes {
+    (patch_note_id, pull_request_id) [pk]
+  }
+}
+
+Table "build_runs" {
+  "id" BIGINT [pk, not null, increment]
+  "repository_id" BIGINT [not null]
+  "github_run_id" BIGINT [not null]
+  "run_attempt" INT [not null]
+  "workflow_name" VARCHAR(255) [not null]
+  "branch_name" VARCHAR(255)
+  "head_sha" VARCHAR(64) [not null]
+  "status" VARCHAR(30) [not null]
+  "conclusion" VARCHAR(30)
+  "html_url" VARCHAR(2048) [not null]
+  "started_at" DATETIME(6)
+  "completed_at" DATETIME(6)
+  "github_updated_at" DATETIME(6)
+  "last_fetched_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `run_attempt > 0` [name: 'ck_build_runs_attempt']
+  }
+
+  Indexes {
+    (id, repository_id) [unique, name: "uk_build_runs_scope"]
+    (repository_id, github_run_id, run_attempt) [unique, name: "uk_build_runs_repository_run_attempt"]
+    (repository_id, head_sha, started_at) [name: "idx_build_runs_repository_sha_started"]
+  }
+}
+
+Table "deployments" {
+  "id" BIGINT [pk, not null, increment]
+  "repository_id" BIGINT [not null]
+  "github_deployment_id" BIGINT [not null]
+  "environment" VARCHAR(100) [not null]
+  "commit_sha" VARCHAR(64) [not null]
+  "status" VARCHAR(30) [not null]
+  "environment_url" VARCHAR(2048)
+  "log_url" VARCHAR(2048)
+  "deployed_at" DATETIME(6)
+  "github_status_id" BIGINT
+  "github_status_at" DATETIME(6)
+  "last_fetched_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Indexes {
+    (id, repository_id) [unique, name: "uk_deployments_scope"]
+    (repository_id, github_deployment_id) [unique, name: "uk_deployments_repository_github"]
+    (repository_id, environment, deployed_at) [name: "idx_deployments_repository_environment_date"]
+  }
+}
+
+Table "deployment_pull_requests" {
+  "repository_id" BIGINT [not null]
+  "deployment_id" BIGINT [not null]
+  "pull_request_id" BIGINT [not null]
+  "linked_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Indexes {
+    (deployment_id, pull_request_id) [pk]
+  }
+}
+
+Table "activities" {
+  "id" BIGINT [pk, not null, increment]
+  "project_id" BIGINT [not null]
+  "repository_id" BIGINT
+  "actor_account_id" BIGINT
+  "event_key" VARCHAR(255) [not null]
+  "event_type" VARCHAR(50) [not null]
+  "title" VARCHAR(255) [not null]
+  "summary" TEXT
+  "occurred_at" DATETIME(6) [not null]
+  "issue_id" BIGINT
+  "pull_request_id" BIGINT
+  "build_run_id" BIGINT
+  "deployment_id" BIGINT
+  "patch_note_id" BIGINT
+  "commit_sha" VARCHAR(64)
+  "branch_name" VARCHAR(255)
+  "source_url" VARCHAR(2048)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+  "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Checks {
+    `(issue_id IS NOT NULL) + (pull_request_id IS NOT NULL)
+        + (build_run_id IS NOT NULL) + (deployment_id IS NOT NULL)
+        + (patch_note_id IS NOT NULL) <= 1` [name: 'ck_activities_single_target']
+    `(issue_id IS NULL AND pull_request_id IS NULL AND build_run_id IS NULL AND deployment_id IS NULL) OR repository_id IS NOT NULL` [name: 'ck_activities_repository_target']
+    `patch_note_id IS NULL OR repository_id IS NULL` [name: 'ck_activities_patch_note_scope']
+  }
+
+  Indexes {
+    (id, project_id) [unique, name: "uk_activities_scope"]
+    (project_id, event_key) [unique, name: "uk_activities_project_event"]
+    (project_id, occurred_at, id) [name: "idx_activities_project_occurred"]
+    (repository_id, occurred_at, id) [name: "idx_activities_repository_occurred"]
+  }
+}
+
+Table "notifications" {
+  "id" BIGINT [pk, not null, increment]
+  "project_id" BIGINT [not null]
+  "recipient_user_id" BIGINT [not null]
+  "activity_id" BIGINT [not null]
+  "title" VARCHAR(255) [not null]
+  "body" TEXT
+  "read_at" DATETIME(6)
+  "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
+
+  Indexes {
+    (recipient_user_id, activity_id) [unique, name: "uk_notifications_recipient_activity"]
+    (recipient_user_id, read_at, created_at, id) [name: "idx_notifications_recipient_read_created"]
+    (project_id, recipient_user_id, read_at, created_at, id) [name: "idx_notifications_project_recipient_read"]
+    (recipient_user_id, created_at, id) [name: "idx_notifications_recipient_created"]
+  }
+}
+
+Ref "fk_users_github_account":"github_accounts"."id" <? "users"."github_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_projects_owner":"users"."id" <? "projects"."owner_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_project_members_project":"projects"."id" <? "project_members"."project_id" [update: restrict, delete: restrict]
+
+Ref "fk_project_members_user":"users"."id" <? "project_members"."user_id" [update: restrict, delete: restrict]
+
+Ref "fk_github_installations_owner":"github_accounts"."id" <? "github_installations"."owner_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_repositories_project":"projects"."id" <? "repositories"."project_id" [update: restrict, delete: restrict]
+
+Ref "fk_repositories_installation":"github_installations"."id" <? "repositories"."installation_id" [update: restrict, delete: restrict]
+
+Ref "fk_repository_sync_runs_repository":"repositories"."id" <? "repository_sync_runs"."repository_id" [update: restrict, delete: restrict]
+
+Ref "fk_repository_sync_runs_retry":"repository_sync_runs".("id", "repository_id") ?<? "repository_sync_runs".("retry_of_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_project_invitations_project":"projects"."id" <? "project_invitations"."project_id" [update: restrict, delete: restrict]
+
+Ref "fk_project_invitations_inviter":"users"."id" <? "project_invitations"."invited_by_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_project_invitations_target":"github_accounts"."id" ?<? "project_invitations"."target_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_project_invitations_accepter":"users"."id" ?<? "project_invitations"."accepted_by_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_webhook_deliveries_installation":"github_installations"."id" ?<? "webhook_deliveries"."installation_id" [update: restrict, delete: restrict]
+
+Ref "fk_issues_repository":"repositories"."id" <? "issues"."repository_id" [update: restrict, delete: restrict]
+
+Ref "fk_issues_author":"github_accounts"."id" ?<? "issues"."author_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_issues_assignee":"github_accounts"."id" ?<? "issues"."assignee_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_issues_creator":"users"."id" ?<? "issues"."created_by_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_requests_repository":"repositories"."id" <? "pull_requests"."repository_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_requests_author":"github_accounts"."id" ?<? "pull_requests"."author_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_requests_creator":"users"."id" ?<? "pull_requests"."created_by_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_issue_pull_requests_issue":"issues".("id", "repository_id") <? "issue_pull_requests".("issue_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_issue_pull_requests_pr":"pull_requests".("id", "repository_id") <? "issue_pull_requests".("pull_request_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_issue_pull_requests_creator":"users"."id" ?<? "issue_pull_requests"."created_by_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_request_reviewers_pr":"pull_requests"."id" <? "pull_request_reviewers"."pull_request_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_request_reviewers_account":"github_accounts"."id" <? "pull_request_reviewers"."reviewer_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_request_reviews_pr":"pull_requests"."id" <? "pull_request_reviews"."pull_request_id" [update: restrict, delete: restrict]
+
+Ref "fk_pull_request_reviews_account":"github_accounts"."id" ?<? "pull_request_reviews"."reviewer_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_patch_notes_project":"projects"."id" <? "patch_notes"."project_id" [update: restrict, delete: restrict]
+
+Ref "fk_patch_notes_author":"users"."id" <? "patch_notes"."author_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_patch_note_items_note":"patch_notes".("id", "project_id") <? "patch_note_items".("patch_note_id", "project_id") [update: restrict, delete: restrict]
+
+Ref "fk_patch_note_items_pr":"pull_requests".("id", "repository_id") <? "patch_note_items".("pull_request_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_patch_note_items_repository_scope":"repositories".("id", "project_id") <? "patch_note_items".("repository_id", "project_id") [update: restrict, delete: restrict]
+
+Ref "fk_build_runs_repository":"repositories"."id" <? "build_runs"."repository_id" [update: restrict, delete: restrict]
+
+Ref "fk_deployments_repository":"repositories"."id" <? "deployments"."repository_id" [update: restrict, delete: restrict]
+
+Ref "fk_deployment_pull_requests_deployment":"deployments".("id", "repository_id") <? "deployment_pull_requests".("deployment_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_deployment_pull_requests_pr":"pull_requests".("id", "repository_id") <? "deployment_pull_requests".("pull_request_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_activities_project":"projects"."id" <? "activities"."project_id" [update: restrict, delete: restrict]
+
+Ref "fk_activities_repository":"repositories".("id", "project_id") ?<? "activities".("repository_id", "project_id") [update: restrict, delete: restrict]
+
+Ref "fk_activities_actor":"github_accounts"."id" ?<? "activities"."actor_account_id" [update: restrict, delete: restrict]
+
+Ref "fk_activities_issue":"issues".("id", "repository_id") ?<? "activities".("issue_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_activities_pr":"pull_requests".("id", "repository_id") ?<? "activities".("pull_request_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_activities_build":"build_runs".("id", "repository_id") ?<? "activities".("build_run_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_activities_deployment":"deployments".("id", "repository_id") ?<? "activities".("deployment_id", "repository_id") [update: restrict, delete: restrict]
+
+Ref "fk_activities_patch_note":"patch_notes".("id", "project_id") ?<? "activities".("patch_note_id", "project_id") [update: restrict, delete: restrict]
+
+Ref "fk_notifications_recipient":"project_members".("project_id", "user_id") <? "notifications".("project_id", "recipient_user_id") [update: restrict, delete: restrict]
+
+Ref "fk_notifications_activity":"activities".("id", "project_id") <? "notifications".("activity_id", "project_id") [update: restrict, delete: restrict]

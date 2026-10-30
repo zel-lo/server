@@ -1,0 +1,202 @@
+erDiagram
+    direction LR
+
+    githubAccounts ||..o| users : "서비스 가입"
+    users ||..o{ projects : "소유"
+    users ||--o{ projectMembers : "참여"
+    projects ||--o{ projectMembers : "멤버 구성"
+    projects ||..o{ repositories : "저장소 연결"
+    repositories ||..o{ issues : "이슈 보유"
+    repositories ||..o{ pullRequests : "PR 보유"
+    issues ||--o{ issuePullRequests : "해결 관계"
+    pullRequests ||--o{ issuePullRequests : "해결 관계"
+    pullRequests ||--o{ pullRequestReviewers : "검토 요청"
+    githubAccounts ||--o{ pullRequestReviewers : "검토 대상"
+    pullRequests ||..o{ pullRequestReviews : "리뷰 이력"
+    githubAccounts |o..o{ issues : "담당"
+    githubAccounts |o..o{ pullRequests : "작성"
+    githubAccounts |o..o{ pullRequestReviews : "리뷰 작성"
+
+    githubAccounts {
+        bigint id PK
+        bigint github_id UK
+        varchar login
+        varchar account_type
+    }
+    users {
+        bigint id PK
+        bigint github_account_id FK,UK
+        varchar theme
+        varchar status
+        datetime withdrawn_at
+    }
+    projects {
+        bigint id PK
+        bigint owner_user_id FK
+        varchar name
+        text description
+    }
+    projectMembers {
+        bigint project_id PK,FK
+        bigint user_id PK,FK
+        varchar role
+    }
+    repositories {
+        bigint id PK
+        bigint project_id FK
+        bigint installation_id FK
+        bigint github_repo_id
+        varchar name
+    }
+    issues {
+        bigint id PK
+        bigint repository_id FK
+        bigint assignee_account_id FK
+        varchar issue_key UK
+        int github_number
+        varchar work_status
+        datetime github_updated_at
+        bigint version
+    }
+    pullRequests {
+        bigint id PK
+        bigint repository_id FK
+        bigint author_account_id FK
+        int github_number
+        varchar state
+        boolean is_draft
+        datetime github_updated_at
+        bigint version
+    }
+    issuePullRequests {
+        bigint repository_id FK
+        bigint issue_id PK,FK
+        bigint pull_request_id PK,FK
+    }
+    pullRequestReviewers {
+        bigint pull_request_id PK,FK
+        bigint reviewer_account_id PK,FK
+        varchar request_status
+    }
+    pullRequestReviews {
+        bigint id PK
+        bigint pull_request_id FK
+        bigint reviewer_account_id FK
+        bigint github_review_id
+        varchar state
+    }
+
+    projects ||..o{ activities : "활동 기록"
+    repositories |o..o{ activities : "활동 출처"
+    activities ||..o{ notifications : "알림 생성"
+    projectMembers ||..o{ notifications : "프로젝트별 개인 수신"
+    projects ||..o{ patchNotes : "업데이트 작성"
+    patchNotes ||--o{ patchNoteItems : "변경 포함"
+    pullRequests ||--o{ patchNoteItems : "PR 연결"
+    repositories ||..o{ buildRuns : "빌드 실행"
+    repositories ||..o{ deployments : "배포 기록"
+    deployments ||--o{ deploymentPullRequests : "포함 변경"
+    pullRequests ||--o{ deploymentPullRequests : "배포 이력"
+
+    activities {
+        bigint id PK
+        bigint project_id FK
+        bigint repository_id FK
+        bigint actor_account_id FK
+        varchar event_key
+        varchar event_type
+        bigint issue_id FK
+        bigint pull_request_id FK
+        bigint build_run_id FK
+        bigint deployment_id FK
+        bigint patch_note_id FK
+    }
+    notifications {
+        bigint id PK
+        bigint project_id FK
+        bigint recipient_user_id FK
+        bigint activity_id FK
+        varchar title
+        text body
+        datetime read_at
+    }
+    patchNotes {
+        bigint id PK
+        bigint project_id FK
+        bigint author_user_id FK
+        varchar title
+        varchar status
+    }
+    patchNoteItems {
+        bigint project_id FK
+        bigint repository_id FK
+        bigint patch_note_id PK,FK
+        bigint pull_request_id PK,FK
+        varchar category
+        text summary
+        int sort_order
+    }
+    buildRuns {
+        bigint id PK
+        bigint repository_id FK
+        bigint github_run_id
+        int run_attempt
+        varchar head_sha
+        varchar status
+        varchar conclusion
+    }
+    deployments {
+        bigint id PK
+        bigint repository_id FK
+        bigint github_deployment_id
+        varchar environment
+        varchar commit_sha
+        varchar status
+    }
+    deploymentPullRequests {
+        bigint repository_id FK
+        bigint deployment_id PK,FK
+        bigint pull_request_id PK,FK
+    }
+
+    githubAccounts ||..o{ githubInstallations : "설치 계정"
+    githubInstallations ||..o{ repositories : "저장소 접근"
+    githubInstallations |o..o{ webhookDeliveries : "이벤트 수신"
+    repositories ||..o{ repositorySyncRuns : "수집 실행"
+    repositorySyncRuns |o..o{ repositorySyncRuns : "재시도 이력"
+    projects ||..o{ projectInvitations : "초대 발급"
+    users ||..o{ projectInvitations : "초대 생성"
+
+    githubInstallations {
+        bigint id PK
+        bigint github_installation_id UK
+        bigint owner_account_id FK
+        varchar status
+    }
+    webhookDeliveries {
+        bigint id PK
+        varchar github_delivery_id UK
+        bigint installation_id FK
+        varchar event_name
+        varchar action
+        varchar processing_status
+    }
+    repositorySyncRuns {
+        bigint id PK
+        bigint repository_id FK
+        bigint retry_of_id FK
+        varchar run_kind
+        varchar status
+        json checkpoint
+        datetime heartbeat_at
+    }
+    projectInvitations {
+        bigint id PK
+        bigint project_id FK
+        bigint invited_by_user_id FK
+        bigint target_account_id FK
+        bigint accepted_by_user_id FK
+        varchar token_hash UK
+        varchar granted_role
+        datetime expires_at
+    }
