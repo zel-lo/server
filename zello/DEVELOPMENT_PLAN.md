@@ -1,6 +1,6 @@
 # zello 백엔드 개발 계획
 
-기준일: 2026-10-30. Spring의 21개 엔티티와 MySQL/Flyway 초기화, GitHub 로그인·현재 사용자·로그아웃 API 및 React 세션 연동을 구현했다. 로컬 MySQL에 V1 마이그레이션과 Hibernate validate를 확인했다. 프로젝트 작업 데이터는 아직 샘플이며, 프로젝트 생성·멤버 권한과 GitHub App 설치 범위의 개인/Organization 저장소 연결 API·React 설정 화면도 구현했다. 로그인 세션은 MySQL에 암호화하여 보관한다. 다음 구현 대상은 실제 이슈 저장·조회와 원본 수집이다.
+기준일: 2026-10-30. Spring의 21개 엔티티와 MySQL/Flyway 초기화, GitHub 로그인·현재 사용자·로그아웃 API 및 React 세션 연동을 구현했다. 로컬 MySQL에 V1 마이그레이션과 Hibernate validate를 확인했다. 프로젝트 작업 데이터는 아직 샘플이며, 프로젝트 생성·멤버 권한과 사용자 OAuth 권한의 개인/Organization 저장소 연결 API·React 설정 화면도 구현했다. 로그인 세션은 MySQL에 암호화하여 보관한다. 다음 구현 대상은 실제 이슈 저장·조회와 원본 수집이다.
 
 아래 단계 중 로그인 API는 구현되어 있고, 프로젝트·저장소 API도 구현했고, 멤버 관리·이슈 및 후속 API 경로는 설계안이다. GitHub App의 설치 권한 승인과 실제 사용자 토큰을 이용한 저장소 접근 검증은 다음 단계에서 진행한다.
 
@@ -80,30 +80,16 @@ GitHub App은 설치 권한과 사용자 권한을 구분하며 사용자 대신
 
 **커밋 단위 예시**: 프로젝트·멤버 Repository → 권한 검사 → 생성 트랜잭션 → 목록·상세·멤버 API.
 
-### 3단계 — GitHub App 설치와 저장소 연결
+### 3단계 — OAuth 로그인 후 사이트 내 저장소 연결
 
-| 경로 제안 | 목적 |
-|---|---|
-| `GET /api/projects/{projectId}/github/install-url` | 프로젝트에 연결할 App 설치 URL 준비 |
-| `GET /api/github/installations/callback` | 설치 후 복귀·설치 정보 검증 |
-| `GET /api/github/installations` | 현재 사용자가 접근할 수 있는 설치 목록 |
-| `GET /api/github/installations/{githubInstallationId}/repositories` | 연결 가능한 원본 저장소 목록 |
-| `POST /api/projects/{projectId}/repositories` | 검증한 원본 저장소를 프로젝트에 연결 |
-| `GET /api/projects/{projectId}/repositories` | 프로젝트에 연결된 저장소 목록 |
-| `DELETE /api/projects/{projectId}/repositories/{repositoryId}` | 연결 해제·후속 동기화 중단 |
+구현: GitHub OAuth App 로그인에서 read:user·repo·read:org를 승인받고 zello에서 개인/Organization 저장소를 조회·검색·연결한다. 저장소 연결을 위한 GitHub App 설치·setup callback 이동은 기본 흐름에서 제거했다. 이전 설치 기반 데이터는 호환 목적으로 유지한다.
 
-- 설치 시작 시 프로젝트와 현재 세션의 연관성을 서버에 기록한다.
-- callback의 installation_id는 신뢰하지 않고 현재 사용자와 해당 설치의 관계를 GitHub API로 확인한다.
-- 연결 요청은 `githubInstallationId`, `githubRepositoryId`를 받고 서버가 원본 정보·설치 범위·사용자 접근 권한을 검증한다. 클라이언트가 보낸 저장소 이름·언어·비공개 여부를 그대로 저장하지 않는다.
-- 연결 관리는 OWNER·ADMIN만 허용한다. 동일 프로젝트의 중복 연결은 고유 제약과 409 응답으로 처리한다.
-- 연결 확인과 전체 데이터 수집 완료를 구분한다. 이 단계에서 원본 접근이 확인돼도 초기 전체 수집 완료 시각은 아직 기록하지 않는다.
-- client 저장소 설정 화면을 API로 바꾼다.
-
-**완료 기준**: 실제 허용된 저장소만 목록에 나오고 연결된다. 위조한 설치 ID·접근 불가능한 저장소·권한 없는 멤버의 연결 요청은 실패한다.
-
-GitHub는 setup URL의 installation_id를 위조할 수 있으므로 사용자와 설치의 연관성을 검증하도록 안내한다. [설치 후 복귀 문서](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-setup-url)
-
-**커밋 단위 예시**: GitHub HTTP 클라이언트·토큰 공급자 → 설치 검증 → 저장소 목록 → 프로젝트 연결·해제 API → client 저장소 연동.
+- GET /api/github/accounts: 현재 사용자와 조직 목록.
+- GET /api/github/repositories: 전체·개인·Organization 원본 목록.
+- POST /api/projects/{projectId}/repositories: 설치 ID 없이 원본 저장소 ID로 연결.
+- 연결·해제는 프로젝트 소유자/ADMIN, 조회는 멤버십과 현재 GitHub 접근 권한을 모두 검사한다.
+- V3에서 설치 없는 OAuth 연결을 지원한다. 토큰은 MySQL의 암호화한 세션에서 읽고, 기존 GitHub App 토큰은 새 OAuth 자격 증명에 재사용하지 않는다.
+- 실제 검증에는 별도의 OAuth App Client ID·Secret 설정이 필요하다. Organization 정책/SSO는 해당 조직의 승인을 따른다.
 
 ### 4단계 — zello 이슈 저장·조회와 기본 배정 알림
 

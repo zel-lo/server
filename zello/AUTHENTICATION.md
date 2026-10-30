@@ -1,102 +1,87 @@
-# GitHub 로그인
+# GitHub OAuth 로그인
 
-GitHub 사용자 승인 → 서버의 code 교환·GitHub /user 조회 → 회원 생성/갱신 → HttpOnly 서버 세션 → React 복귀를 구현했습니다. 로그인된 사용자 정보는 `GET /api/me`로 조회합니다. 저장소 접근 승인과 프로젝트 연결은 별도 후속 작업입니다.
+기본 방식은 **OAuth App**이다. GitHub 로그인에서 프로필·저장소·조직 접근을 한 번 승인받고, 이후 zello 안에서 저장소를 조회·검색·선택한다. GitHub App 설치와 PAT 입력은 기본 사용자 흐름에 포함하지 않는다.
 
-## 1. GitHub App 등록
+## 1. 서비스 관리자의 최초 설정
 
-[GitHub App 생성 화면](https://github.com/settings/apps/new)에서 개발용 App을 만듭니다.
+[OAuth App 등록 화면](https://github.com/settings/applications/new)에 다음 값을 입력한다. 사용자마다 등록하는 앱이 아니라 서비스 공통 앱이다. 로컬 개발과 운영은 별도 OAuth App으로 관리하는 것을 권장한다.
 
-| 항목 | 개발 설정 |
+| 항목 | 로컬 개발 값 |
 |---|---|
-| GitHub App name | 전역에서 중복되지 않는 개발용 이름 |
+| Application name | zello (local) |
 | Homepage URL | `http://127.0.0.1:5173` |
-| Callback URL | `http://127.0.0.1:8080/login/oauth2/code/github` |
-| Expire user authorization tokens | 기본 설정 유지 |
-| Webhook Active | 로그인만 구현하는 현재 단계에서는 해제 |
-| Permissions | 로그인에는 추가 저장소 권한이 필요하지 않음 |
-| Where can this GitHub App be installed? | 개발용은 Only on this account |
+| Redirect URI | `http://127.0.0.1:8080/login/oauth2/code/github` |
+| Expire user access tokens | 기본 설정 유지 |
+| Device Flow / wildcard redirect | 사용하지 않음 |
 
-생성 후 Client ID와 Generate a new client secret으로 만든 Secret을 로컬 `.env`에 입력합니다. App ID와 Client ID는 서로 다릅니다. 현재 로그인 구현에는 App private key가 필요하지 않습니다.
+OAuth App은 기존 `zello-dev` GitHub App과 다른 등록이다. 기존 GitHub App의 Client ID·Secret은 재사용할 수 없다. 새 앱에서 발급한 값을 서버의 Git에 포함되지 않는 `.env`에 설정한다. 값에 따옴표를 붙이지 않는다.
 
-앱은 사용자 신원 확인과 서버 세션 생성에 사용합니다. 저장소를 임의로 연결하거나 저장소 권한을 부여하지 않습니다. GitHub App의 세밀한 권한은 등록 설정에서 관리하고, OAuth 승인 요청에 repo 같은 광범위한 scope를 넣지 않습니다. 기존 OAuth App을 사용한다면 GITHUB_APP_TYPE=OAUTH로 설정하며 read:user만 요청합니다.
-
-공식 문서: [App 등록](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app), [사용자 토큰](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app).
-
-## 2. 로컬 설정
-
-`server/zello/.env.example`을 참고해 같은 폴더의 `.env`에 값을 입력합니다. 이미 `.env`가 있으면 덮어쓰지 말고 해당 항목만 설정합니다. `.env`는 Spring Boot가 properties 형식으로 읽으며 값에는 따옴표를 붙이지 않습니다. 셸/IDE 환경 변수가 파일보다 우선합니다.
-
-- GITHUB_LOGIN_ENABLED=true
-- GITHUB_CLIENT_ID와 GITHUB_CLIENT_SECRET
-- DB_URL·DB_USERNAME·DB_PASSWORD: 실제 MySQL의 zello 개발 DB와 계정
-- FRONTEND_BASE_URL·GITHUB_REDIRECT_URI: 위 표와 같은 주소
-- SESSION_ENCRYPTION_KEY: `openssl rand -base64 32`로 한 번 생성한 키. 서버 재시작 시 같은 값을 유지한다.
-
-Client ID는 공개 식별자지만 Secret은 서버 `.env`에만 저장합니다. 실제 `.env`는 Git 추적에서 제외되며 프론트 환경 변수에 Secret을 넣지 않습니다. GITHUB_LOGIN_ENABLED=false이면 서버는 가짜 인증을 제공하지 않고 로그인 시작 요청에 503을 반환합니다.
-
-## 3. MySQL과 실행
-
-MySQL에 **빈 zello 개발 DB와 애플리케이션 계정**을 준비하고 해당 계정을 `.env`에 설정합니다. 예를 들어 관리자 MySQL 세션에서 아래 SQL의 비밀번호를 로컬 값으로 바꿔 실행할 수 있습니다.
-
-```sql
-CREATE DATABASE zello CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'zello'@'localhost' IDENTIFIED BY 'replace-with-your-local-password';
-GRANT ALL PRIVILEGES ON zello.* TO 'zello'@'localhost';
+```dotenv
+GITHUB_LOGIN_ENABLED=true
+GITHUB_APP_TYPE=OAUTH
+GITHUB_CLIENT_ID=your-oauth-app-client-id
+GITHUB_CLIENT_SECRET=your-oauth-app-client-secret
+GITHUB_REDIRECT_URI=http://127.0.0.1:8080/login/oauth2/code/github
+FRONTEND_BASE_URL=http://127.0.0.1:5173
 ```
 
-이미 DB·계정이 있으면 재생성하지 않습니다. 첫 실행 시 Flyway V1이 업무용 21개 테이블을 만들고 V2가 Spring Session의 세션·속성 테이블을 추가합니다. Hibernate validate가 엔티티 매핑을 확인합니다. 기존의 테이블이 있는 DB에 자동 baseline·초기화·데이터 삭제를 수행하지 않습니다. 개발용 DB를 새로 준비하거나 기존 스키마의 마이그레이션 여부를 먼저 확인해야 합니다.
+DB_URL·DB_USERNAME·DB_PASSWORD는 실제 MySQL 개발 계정을 사용한다. SESSION_ENCRYPTION_KEY는 `openssl rand -base64 32`로 한 번 만든 32바이트 키를 계속 유지한다. 기존 `.env`를 예시 파일로 덮어쓰지 않는다. Client Secret과 암호화 키는 프론트 환경 변수·채팅·Git에 넣지 않는다.
 
-백엔드(Java 25 toolchain):
+## 2. 사용자 흐름과 권한
+
+1. zello의 **GitHub로 로그인**을 누른다.
+2. GitHub에서 서비스와 요청 권한을 확인해 승인한다.
+3. GitHub가 서버 callback으로 code를 보내고 서버가 토큰을 교환한다.
+4. GitHub 고유 ID로 회원을 저장·갱신하고 서버 세션을 만든다.
+5. React가 `/api/me`로 실제 회원을 확인한다.
+6. 프로젝트 설정의 저장소 화면에서 개인·Organization 저장소를 검색해 연결한다.
+
+요청 scope는 `read:user`, `repo`, `read:org`이다. 비공개 저장소를 포함하려면 OAuth App의 `repo` scope가 필요하며, 이 scope는 GitHub 정책상 읽기와 쓰기가 함께 포함된다. 앱의 현재 저장소 목록·연결 API는 원본 데이터를 읽고 zello DB에 연결 정보를 저장한다. GitHub 이슈 생성 등 외부 쓰기는 후속 기능에서 별도의 사용자 액션으로 처리한다.
+
+Organization이 OAuth App 접근을 제한하면 조직 관리자 승인이나 SSO 인증이 필요할 수 있다. OAuth App도 GitHub가 허용하지 않은 조직·비공개 저장소에 접근할 수 없다. 로그인 승인 화면 자체는 GitHub에서 처리하며 그 이후의 저장소 선택·연결은 zello 안에서 수행한다.
+
+## 3. DB와 실행
+
+빈 `zello` 개발 DB와 앱 계정을 준비한다. 기존 DB가 있으면 재생성하지 않는다. Flyway V1은 업무용 21개 테이블, V2는 서버 세션 테이블, V3는 설치 없는 OAuth 저장소 연결을 지원한다. Hibernate는 validate로 검증하며 기존 스키마를 자동 삭제하지 않는다.
 
 ```sh
 cd /Users/apple/Desktop/zello/server/zello
 ./gradlew bootRun
 ```
 
-프론트:
-
 ```sh
 cd /Users/apple/Desktop/zello/client
-npm run dev -- --port 5173 --strictPort
+npm run dev -- --strictPort
 ```
 
-`http://127.0.0.1:5173/#/login`에서 GitHub로 로그인합니다. Vite가 /api·/oauth2·/login/oauth2 요청을 8080 서버로 전달하므로 기본 개발 환경에서는 VITE_GITHUB_AUTH_URL을 비워도 됩니다. localhost와 127.0.0.1을 섞으면 세션 쿠키가 공유되지 않으므로 위 주소를 일관되게 사용합니다.
+개발 주소는 `http://127.0.0.1:5173/#/login`, 서버는 8080이다. Vite가 API와 OAuth 요청을 프록시한다. localhost와 127.0.0.1을 섞지 않는다.
 
-다른 포트/도메인을 사용하면 App Callback URL·GITHUB_REDIRECT_URI·FRONTEND_BASE_URL·프론트 프록시/리버스 프록시를 함께 맞춥니다. 배포 환경은 HTTPS에서 SESSION_COOKIE_SECURE=true로 설정하고 프론트에서 /api와 OAuth 시작 경로를 서버로 전달합니다.
+## 4. 로그인 유지와 보안
 
-## 4. API
+- HttpOnly·SameSite=Lax의 JSESSIONID 쿠키를 사용하고 로그인 성공 시 세션 ID를 교체한다.
+- 기본 30분의 비활동 만료 시간을 갖는 Spring Session JDBC를 사용한다. 회원과 세션은 MySQL에 저장된다.
+- OAuth access/refresh token을 포함한 세션 속성은 AES-256-GCM으로 암호화한다. 같은 DB와 키를 사용하는 서버 재시작 후에도 유효한 로그인이 유지된다.
+- 토큰·code를 프론트 응답이나 localStorage에 저장하지 않는다. OAuth state, PKCE S256, code 교환은 Spring Security가 처리한다.
+- POST/DELETE는 CSRF 토큰을 검증한다. 로그아웃은 서버 세션을 DB에서 삭제한다. 탈퇴한 계정의 기존 세션도 차단한다.
+- 토큰 만료·취소 또는 scope 부족은 재로그인으로 안내한다. refresh token은 암호화해 보관하되 자동 refresh는 아직 구현하지 않았다.
+- 기존 GitHub App 세션 또는 다른 Client ID로 만든 세션의 토큰을 새 OAuth App용으로 재사용하지 않는다.
+- 홈·사이드바에는 실제 사용자와 로그인 상태를 표시하고, 탭 재활성화 및 다른 탭의 로그아웃을 반영한다.
 
-| 요청 | 응답 |
+운영에서는 서비스 도메인으로 Homepage와 Callback URL, FRONTEND_BASE_URL, GITHUB_REDIRECT_URI를 함께 변경하고 HTTPS에서 SESSION_COOKIE_SECURE=true를 설정한다. 운영 DB·Secret·암호화 키는 환경별 비밀 설정으로 관리한다.
+
+## 5. API와 검증
+
+| API | 기능 |
 |---|---|
-| GET /api/auth/status | githubLoginEnabled, 인증 정보는 제외 |
-| GET /oauth2/authorization/github | state·S256 PKCE를 포함한 GitHub 승인 URL로 이동 |
-| GET /login/oauth2/code/github | 서버의 OAuth callback |
-| GET /api/me | 현재 회원의 id·githubId·login·displayName·avatarUrl·email·theme |
-| GET /api/auth/csrf | headerName·parameterName·token |
-| POST /api/auth/logout | CSRF 헤더를 검증한 뒤 세션 종료, 204 |
+| GET /api/auth/status | 로그인 설정 여부 |
+| GET /oauth2/authorization/github | OAuth 로그인·권한 승인 시작 |
+| GET /login/oauth2/code/github | 서버 callback |
+| GET /api/me | 실제 로그인 회원; ID는 문자열 |
+| GET /api/auth/csrf | CSRF 헤더 이름과 토큰 |
+| POST /api/auth/logout | 세션 삭제, 204 |
 
-미인증 API 호출은 JSON 401이며 GitHub로 강제 리다이렉트하지 않습니다. 로그아웃은 CSRF 토큰 없이 POST하면 403이고 GET으로는 실행되지 않습니다. 사용자 ID는 요청 본문에서 신뢰하지 않고 인증 principal에서 결정합니다.
+`./gradlew build`로 로그인·세션·권한·ERD 계약을 검증한다. PersistentLoginTests는 JDBC 세션을 실제 사용하고, 외부 GitHub HTTP 응답만 테스트 대역으로 제공한다. 실제 OAuth App의 브라우저 승인과 저장소 조회는 새 자격 증명 설정 후 별도로 확인한다.
 
-React의 /auth/callback 화면이 /api/me를 조회한 뒤 워크스페이스로 이동합니다. 홈에는 실제 사용자 이름·로그인됨·워크스페이스 이동을 표시하고, 로그인한 사용자의 로그인 페이지 재방문은 워크스페이스로 보냅니다. GitHub 권한을 갱신하는 명시적 재로그인은 예외로 허용합니다. 탭 재활성화 시 서버 세션을 다시 확인하고 다른 탭의 로그아웃도 반영합니다. 샘플 프로젝트의 작업 데이터는 계속 샘플이며, 로그인한 회원의 이름·GitHub 로그인과 로그아웃 버튼을 프로필에 표시합니다. 회원가입과 로그인은 같은 OAuth 흐름으로 처리하고 GitHub 고유 ID로 재로그인 회원을 식별합니다. 공개 이메일이 없어도 가입할 수 있습니다.
+기존 GitHub App 경로는 이미 저장된 연결과 테스트를 위한 호환 경로로 남아 있다. 기본 프론트는 설치 URL·설치 callback을 사용하지 않는다. 이전 App으로 돌아가는 설정은 GITHUB_APP_TYPE=APP이지만 신규 사용자 흐름은 OAUTH를 사용한다.
 
-로그인 후 회원이 탈퇴 상태가 되면 후속 요청에서 세션을 종료합니다. 회원 탈퇴·프로젝트 소유권 이전 API 자체는 이번 범위에 포함하지 않았습니다.
-
-## 5. 세션과 토큰
-
-- HttpOnly·SameSite=Lax의 JSESSIONID 쿠키와 기본 30분 MySQL 기반 서버 세션을 사용합니다. 로그인 성공 시 세션 ID를 교체하고 로그아웃하면 DB 세션을 삭제합니다.
-- OAuth state·PKCE·토큰 교환은 Spring Security가 처리합니다. 승인 시작과 code 교환을 프론트에서 직접 구현하지 않습니다.
-- GitHub access/refresh token은 authorized client로 **MySQL의 서버 세션에 암호화하여** 저장하고 프론트 응답·URL·localStorage로 전달하지 않습니다. 세션 속성은 AES-256-GCM으로 보호하며 키는 SESSION_ENCRYPTION_KEY에서 읽습니다. 같은 DB와 키를 사용하는 서버를 재시작해도 유효한 세션은 유지됩니다. 키를 변경하거나 유실하면 기존 세션을 읽을 수 없으므로 키를 안정적으로 관리해야 합니다.
-- 저장소 연결은 로그인한 사용자의 GitHub 토큰을 사용합니다. 토큰 만료·취소 시 다시 로그인하도록 안내하며 자동 refresh는 후속 구현입니다. 로그인 유지 시간과 GitHub 토큰 유효 시간은 서로 다릅니다.
-- 성공·실패 복귀 URL은 서버 설정으로 고정합니다. 사용자 입력 returnTo나 GitHub 오류 설명을 그대로 URL에 넣지 않습니다.
-- CORS는 설정한 프론트 origin만 credential 요청을 허용합니다. CSRF 보호는 켜 둡니다.
-
-## 6. 검증
-
-```sh
-./gradlew test
-./gradlew build
-```
-
-실제 GitHub에 요청하지 않는 통합 테스트는 code 교환과 원본 사용자 응답만 테스트 대역으로 바꾸고, 실제 Spring Security OAuth 필터·state·PKCE·회원 DB·서버 세션·CSRF·로그아웃을 실행합니다. 첫 가입·재로그인·이름 변경·이메일 비공개·취소·state 위조·탈퇴 계정·CORS를 확인합니다. 이는 실제 앱 자격 증명으로 브라우저 승인한 결과와 구분합니다.
-
-테스트의 H2 설정은 테스트 클래스패스에만 있으며 Flyway를 끄고 Hibernate create-drop을 사용합니다. 앱은 MySQL과 Flyway를 사용합니다. 일반 MockMvc 테스트는 메모리 세션을 격리해 사용하고, PersistentLoginTests는 Spring Session JDBC를 실제 활성화하여 OAuth 이후 쿠키·DB 저장·새 repository에서 복원·만료·로그아웃 삭제를 검증합니다. 세션 속성의 원문 토큰 미노출과 변조 거부도 확인합니다. 실제 GitHub 승인과 서버 재시작 확인은 로컬 App 자격 증명이 있는 환경에서 별도로 수행합니다.
+공식 문서: [OAuth App 등록](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app), [scope](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps), [사용자 저장소 조회](https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user).
