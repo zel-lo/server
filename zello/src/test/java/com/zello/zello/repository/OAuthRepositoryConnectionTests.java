@@ -73,6 +73,27 @@ class OAuthRepositoryConnectionTests {
     }
 
     @Test
+    void supportsMultipleRepositoriesInOneProjectAndChecksEachCurrentGithubPermission() throws Exception {
+        long secondId = IDS.incrementAndGet();
+        when(github.repository(anyString(), eq(secondId))).thenReturn(new GitHubGateway.RemoteRepository(secondId,
+                new GitHubGateway.Owner(45, "team", "Organization", null), "client", "team/client",
+                "https://github.com/team/client", null, "TypeScript", "main", true, false));
+        connect().andExpect(status().isCreated());
+        mvc.perform(post(path()).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"githubRepositoryId\":\"" + secondId + "\"}"))
+                .andExpect(status().isCreated());
+        mvc.perform(get(path()).with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].name").value("server"))
+                .andExpect(jsonPath("$[1].name").value("client"));
+        connect().andExpect(status().isConflict());
+        when(github.repository(anyString(), eq(repoId))).thenThrow(new ApiException(404, "GITHUB_RESOURCE_NOT_FOUND", "권한 취소"));
+        mvc.perform(get(path()).with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].name").value("client"));
+        assertThat(repositories.findByProjectIdOrderByIdAsc(projectId)).hasSize(2);
+    }
+
+    @Test
     void duplicateAndReconnectKeepTheRepositoryIdentity() throws Exception {
         var first = connect().andExpect(status().isCreated()).andReturn();
         String id = JsonPath.read(first.getResponse().getContentAsString(), "$.id");

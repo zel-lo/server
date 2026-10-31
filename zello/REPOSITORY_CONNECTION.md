@@ -53,3 +53,10 @@ OAuth scope·state·PKCE, 설치 없는 저장과 재연결, 위조 메타데이
 이전 GitHub App 설치·setup callback은 호환 경로로 남아 있으나 기본 프론트에서 사용하지 않는다. OAuth App에는 Setup URL을 등록하지 않고 로그인 Callback URL만 사용한다.
 
 공식 문서: [사용자 저장소 API](https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user), [조직 API](https://docs.github.com/en/rest/orgs/orgs), [OAuth 승인과 조직 정책](https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/authorizing-oauth-apps).
+
+
+## 다중 저장소 선택 — 2026-11-01
+
+프로젝트와 저장소 연결은 1:N이며 `UNIQUE(project_id, github_repo_id)`는 같은 프로젝트 안의 중복만 차단한다. 화면에서 계정/페이지/검색을 바꾸며 최대 50개를 선택해 한 번에 연결할 수 있다. 개별 연결 API를 순서대로 호출해 각 저장소의 현재 GitHub 접근과 프로젝트 관리 권한을 검증한다. 전역 재로그인/권한 오류는 남은 요청을 중단하며, 저장소별 실패는 성공 연결을 유지하고 실패만 재시도한다. 다른 관리자가 먼저 연결했거나 응답이 유실된 경우 409 이후 현재 연결 목록으로 확인해 중복 성공을 안전하게 처리한다.
+
+수집은 전체 연결 처리 후 프로젝트별 한 번만 실행한다. 가입 안내에서 부분 실패 시 화면에 남아 결과를 확인하거나 연결된 저장소로 시작할 수 있다. 일반 focus 이벤트로 재조회하지 않고 조직 승인 화면에서 돌아온 경우에만 자동 갱신한다. 체크 선택은 갱신·계정·페이지 전환 시 유지하며 프로젝트 변경 때 비운다.
