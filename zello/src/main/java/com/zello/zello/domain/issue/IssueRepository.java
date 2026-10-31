@@ -15,7 +15,7 @@ public interface IssueRepository extends JpaRepository<Issue, Long> {
     @EntityGraph(attributePaths = {"repository", "authorAccount", "assigneeAccount"})
     @Query("""
         select i from Issue i where i.repository.projectId=:projectId and i.repositoryId in :repositories
-       
+
         and ((:archived=true and i.archivedAt is not null) or (:archived=false and i.archivedAt is null))
         and (:activeOnly=false or i.workStatus<>com.zello.zello.domain.issue.Issue.WorkStatus.DONE)
         and (:status is null or i.workStatus=:status) and (:assignee is null or i.assigneeAccountId=:assignee)

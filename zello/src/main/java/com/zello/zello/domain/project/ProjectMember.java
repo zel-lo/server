@@ -28,6 +28,10 @@ public class ProjectMember {
     @EmbeddedId
     private ProjectMemberId id;
 
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "role", nullable = false, length = 20)
@@ -84,6 +88,12 @@ public class ProjectMember {
 
     public void leave(LocalDateTime leftAt) {
         this.leftAt = EntitySupport.required(leftAt, "leftAt");
+    }
+
+    public void rejoin(Role role, LocalDateTime joinedAt) {
+        this.role = EntitySupport.required(role, "role");
+        this.joinedAt = EntitySupport.required(joinedAt, "joinedAt");
+        this.leftAt = null;
     }
 
     public void changeRole(Role role) {

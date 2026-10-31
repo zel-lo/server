@@ -46,7 +46,7 @@ public class ProjectService {
                 .orElseThrow(ProjectService::notFound);
         var project = projects.findById(projectId).filter(p -> p.getArchivedAt() == null).orElseThrow(ProjectService::notFound);
         if (manage && !project.getOwnerUserId().equals(userId) && member.getRole() != ProjectMember.Role.ADMIN) {
-            throw new ApiException(403, "PROJECT_ADMIN_REQUIRED", "프로젝트 소유자 또는 관리자만 저장소 연결을 관리할 수 있습니다.");
+            throw new ApiException(403, "PROJECT_ADMIN_REQUIRED", "프로젝트 소유자 또는 관리자만 관리할 수 있습니다.");
         }
         return project;
     }
@@ -68,8 +68,8 @@ public class ProjectService {
     private ProjectView view(Project project, ProjectMember member, long userId) {
         boolean owner = project.getOwnerUserId().equals(userId);
         return new ProjectView(project.getId().toString(), project.getName(), project.getDescription(),
-                owner ? "OWNER" : member.getRole().name(), owner || member.getRole() == ProjectMember.Role.ADMIN);
+                owner ? "OWNER" : member.getRole().name(), owner || member.getRole() == ProjectMember.Role.ADMIN, project.getVersion());
     }
 
-    public record ProjectView(String id, String name, String description, String role, boolean canManageRepositories) { }
+    public record ProjectView(String id, String name, String description, String role, boolean canManageRepositories, Long version) { }
 }

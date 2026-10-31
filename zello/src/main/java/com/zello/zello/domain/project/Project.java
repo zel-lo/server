@@ -69,6 +69,8 @@ public class Project extends VersionedEntity {
         this.name = EntitySupport.text(name, "name");
     }
 
+    public void describe(String description) { this.description = description; }
+
     public void transferOwnership(User ownerUser) {
         this.ownerUser = EntitySupport.required(ownerUser, "ownerUser");
         this.ownerUserId = EntitySupport.required(ownerUser.getId(), "persisted ownerUser");

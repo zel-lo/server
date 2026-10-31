@@ -69,6 +69,7 @@ CREATE TABLE project_members (
     project_id BIGINT NOT NULL,
     user_id BIGINT NOT NULL,
     role VARCHAR(20) NOT NULL,
+    version BIGINT NOT NULL DEFAULT 0,
     job_title VARCHAR(100) NULL,
     joined_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     left_at DATETIME(6) NULL,
@@ -193,6 +194,8 @@ CREATE TABLE project_invitations (
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
+    KEY idx_project_invitations_created (project_id, created_at, id),
+    KEY idx_project_invitations_pending (project_id, invited_by_user_id, accepted_at, revoked_at, expires_at),
     CONSTRAINT uk_project_invitations_token_hash UNIQUE (token_hash),
     CONSTRAINT fk_project_invitations_project FOREIGN KEY (project_id)
         REFERENCES projects (id) ON DELETE RESTRICT ON UPDATE RESTRICT,

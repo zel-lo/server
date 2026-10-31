@@ -21,6 +21,10 @@ import org.hibernate.type.SqlTypes;
         uniqueConstraints = {
                 @UniqueConstraint(name = "uk_project_invitations_token_hash", columnNames = {"token_hash"})
         },
+        indexes = {
+                @Index(name = "idx_project_invitations_created", columnList = "project_id, created_at, id"),
+                @Index(name = "idx_project_invitations_pending", columnList = "project_id, invited_by_user_id, accepted_at, revoked_at, expires_at")
+        },
         check = {
                 @CheckConstraint(name = "ck_project_invitations_role", constraint = "granted_role IN ('ADMIN', 'MEMBER', 'VIEWER')"),
                 @CheckConstraint(name = "ck_project_invitations_acceptance", constraint = "(accepted_at IS NULL AND accepted_by_user_id IS NULL) OR (accepted_at IS NOT NULL AND accepted_by_user_id IS NOT NULL)"),
@@ -112,6 +116,10 @@ public class ProjectInvitation extends IdentityEntity {
         this.acceptedByUser = user;
         this.acceptedByUserId = EntitySupport.required(user.getId(), "persisted user");
         this.acceptedAt = acceptedAt;
+    }
+
+    public void revoke(LocalDateTime now) {
+        if (acceptedAt == null && revokedAt == null) this.revokedAt = EntitySupport.required(now, "now");
     }
 
     public enum GrantedRole {

@@ -60,6 +60,7 @@ Table "projects" {
 Table "project_members" {
   "project_id" BIGINT [not null]
   "user_id" BIGINT [not null]
+  "version" BIGINT [not null, default: 0]
   "role" VARCHAR(20) [not null]
   "job_title" VARCHAR(100)
   "joined_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
@@ -195,6 +196,8 @@ Table "project_invitations" {
 
   Indexes {
     token_hash [unique, name: "uk_project_invitations_token_hash"]
+    (project_id, created_at, id) [name: "idx_project_invitations_created"]
+    (project_id, invited_by_user_id, accepted_at, revoked_at, expires_at) [name: "idx_project_invitations_pending"]
   }
 }
 
