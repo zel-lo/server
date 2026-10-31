@@ -217,6 +217,66 @@ public class PullRequest extends VersionedEntity {
         this.state = State.MERGED;
     }
 
+    /** GitHub 원본을 반영한다. zello 전용인 team_summary는 건드리지 않는다. */
+    public void syncFromRemote(GitHubAccount authorAccount, String githubUrl, String title, String body, String headBranch,
+                               String baseBranch, String headSha, String mergeCommitSha, State state, boolean draft,
+                               ReviewDecision reviewDecision, LocalDateTime openedAt, LocalDateTime closedAt,
+                               LocalDateTime mergedAt, LocalDateTime githubUpdatedAt, LocalDateTime fetchedAt) {
+        if (publishStatus != PublishStatus.PUBLISHED) throw new IllegalStateException("PR is not published");
+        this.authorAccount = authorAccount;
+        this.authorAccountId = authorAccount == null ? null : EntitySupport.required(authorAccount.getId(), "persisted authorAccount.id");
+        this.githubUrl = githubUrl;
+        this.title = EntitySupport.text(title, "title");
+        this.body = body;
+        this.headBranch = EntitySupport.text(headBranch, "headBranch");
+        this.baseBranch = EntitySupport.text(baseBranch, "baseBranch");
+        this.headSha = headSha;
+        this.mergeCommitSha = mergeCommitSha;
+        this.state = EntitySupport.required(state, "state");
+        this.draft = draft && state != State.MERGED;
+        this.reviewDecision = EntitySupport.required(reviewDecision, "reviewDecision");
+        this.openedAt = openedAt;
+        this.closedAt = closedAt;
+        this.mergedAt = state == State.MERGED ? EntitySupport.required(mergedAt, "mergedAt") : null;
+        this.githubUpdatedAt = githubUpdatedAt;
+        this.lastFetchedAt = fetchedAt;
+    }
+
+    /** 같은 요청 키로 다시 시도할 때 발행 중 상태로 되돌린다. */
+    public void claim(LocalDateTime now) {
+        if (publishStatus == PublishStatus.PUBLISHED) throw new IllegalStateException("PR is already published");
+        this.publishStatus = PublishStatus.PENDING;
+        this.lastPublishError = null;
+        this.lastFetchedAt = now;
+    }
+
+    public void markFailed(String error) {
+        this.publishStatus = PublishStatus.FAILED;
+        this.lastPublishError = error;
+    }
+
+    /** 생성 요청이 GitHub에 반영됐는지 알 수 없을 때 쓴다. 이후 원본과 대조해서 복구한다. */
+    public void markUnknown(String error) {
+        this.publishStatus = PublishStatus.UNKNOWN;
+        this.lastPublishError = error;
+    }
+
+    public void markPublished(long githubPrId, int githubNumber, String githubUrl, String headSha, boolean draft,
+                              LocalDateTime openedAt, LocalDateTime githubUpdatedAt, LocalDateTime fetchedAt) {
+        this.githubPrId = githubPrId;
+        this.githubNumber = githubNumber;
+        this.githubUrl = githubUrl;
+        this.headSha = headSha;
+        this.state = State.OPEN;
+        this.draft = draft;
+        this.reviewDecision = draft ? ReviewDecision.UNKNOWN : ReviewDecision.PENDING;
+        this.openedAt = openedAt;
+        this.githubUpdatedAt = githubUpdatedAt;
+        this.lastFetchedAt = fetchedAt;
+        this.publishStatus = PublishStatus.PUBLISHED;
+        this.lastPublishError = null;
+    }
+
     public enum State {
         OPEN, CLOSED, MERGED
     }
