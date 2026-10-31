@@ -354,6 +354,26 @@ class PullRequestApiTests {
     }
 
     @Test
+    void mergingKeepsTheLastReviewDecisionAndPullRequestsFirstSeenClosedStayUnknown() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.APPROVED),
+                fetched(3, 3, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.APPROVED));
+        sync().andExpect(status().isOk());
+        stubFetch(withUpdatedAt(fetched(1, 1, ownerGithubId, "closed", false, null, PullRequest.ReviewDecision.UNKNOWN), "2026-10-31T01:00:00Z"),
+                withUpdatedAt(fetched(3, 3, ownerGithubId, "closed", false, Instant.parse("2026-10-31T01:00:00Z"), PullRequest.ReviewDecision.UNKNOWN), "2026-10-31T01:00:00Z"),
+                fetched(2, 2, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.UNKNOWN));
+        sync().andExpect(status().isOk());
+        list("?state=merged").andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[?(@.number == 3)].reviewDecision").value("APPROVED"))
+                .andExpect(jsonPath("$.items[?(@.number == 2)].reviewDecision").value("UNKNOWN"));
+        list("?state=closed").andExpect(jsonPath("$.items[0].reviewDecision").value("APPROVED"));
+
+        // 병합 없이 닫힌 PR이 다시 열리면 GitHub 리뷰로 새로 계산한다.
+        stubFetch(withUpdatedAt(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.CHANGES_REQUESTED), "2026-10-31T02:00:00Z"));
+        sync().andExpect(status().isOk());
+        list("?state=open").andExpect(jsonPath("$.items[0].reviewDecision").value("CHANGES_REQUESTED"));
+    }
+
+    @Test
     void olderRemoteDataDoesNotOverwriteNewerStoredData() throws Exception {
         stubFetch(fetched(1, 1, ownerGithubId, "closed", false, Instant.parse("2026-10-31T01:00:00Z"), PullRequest.ReviewDecision.UNKNOWN));
         sync().andExpect(status().isOk());

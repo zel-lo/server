@@ -173,18 +173,20 @@ public class PullRequestService {
             var state = remote.mergedAt() != null ? PullRequest.State.MERGED
                     : "open".equals(remote.state()) ? PullRequest.State.OPEN : PullRequest.State.CLOSED;
             var title = remote.title().length() > 255 ? remote.title().substring(0, 255) : remote.title();
+            // 리뷰는 열린 PR만 조회한다. 닫히거나 병합된 PR은 열려 있을 때 마지막으로 계산한 결과를 유지한다.
+            var decision = state != PullRequest.State.OPEN && current != null ? current.getReviewDecision() : item.reviewDecision();
             PullRequest target;
             if (current == null) {
                 target = pullRequests.save(PullRequest.builder().repository(repository).authorAccount(author).githubPrId(remote.id())
                         .githubNumber(remote.number()).githubUrl(remote.htmlUrl()).title(title).body(remote.body())
                         .headBranch(remote.head().ref()).baseBranch(remote.base().ref()).headSha(remote.head().sha())
                         .mergeCommitSha(remote.mergeCommitSha()).state(state).draft(remote.draft() && state != PullRequest.State.MERGED)
-                        .reviewDecision(item.reviewDecision()).openedAt(utc(remote.createdAt())).closedAt(utc(remote.closedAt()))
+                        .reviewDecision(decision).openedAt(utc(remote.createdAt())).closedAt(utc(remote.closedAt()))
                         .mergedAt(utc(remote.mergedAt())).publishStatus(PublishStatus.PUBLISHED)
                         .githubUpdatedAt(utc(remote.updatedAt())).lastFetchedAt(now).build());
             } else {
                 current.syncFromRemote(author, remote.htmlUrl(), title, remote.body(), remote.head().ref(), remote.base().ref(),
-                        remote.head().sha(), remote.mergeCommitSha(), state, remote.draft(), item.reviewDecision(),
+                        remote.head().sha(), remote.mergeCommitSha(), state, remote.draft(), decision,
                         utc(remote.createdAt()), utc(remote.closedAt()), utc(remote.mergedAt()), utc(remote.updatedAt()), now);
                 target = current;
             }
