@@ -142,6 +142,13 @@ public class GitRepository extends IdentityEntity {
         this.connectionStatus = ConnectionStatus.DISCONNECTED;
     }
 
+    /** PR 수집 시각 기록. 이슈까지 수집하기 전이라 initial_sync_completed_at은 건드리지 않는다. */
+    public void recordSync(LocalDateTime syncedAt) {
+        this.lastSyncedAt = EntitySupport.required(syncedAt, "syncedAt");
+        this.lastFetchedAt = syncedAt;
+        this.lastSyncError = null;
+    }
+
     public void confirmConnection(GitHubInstallation installation, String ownerLogin, String name, String htmlUrl,
                                   String description, String language, String defaultBranch, boolean privateRepository) {
         this.installation = EntitySupport.required(installation, "installation");
