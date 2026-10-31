@@ -1,6 +1,6 @@
-# zello ERD 초안
+# zello ERD와 테이블 명세
 
-기준일: 2026-10-30. 현재 React 화면과 데이터 타입, `client/docs/feature.md`를 기준으로 작성한 **구현 전 설계안**이다. DB 마이그레이션이나 JPA 엔티티는 아직 생성하지 않았다.
+갱신일: 2026-11-01. MySQL Flyway V1~V5와 JPA 엔티티에 대응하는 스키마 명세다. 테이블이 존재하더라도 후속 기능의 API·화면 구현을 뜻하지는 않는다. 구현 범위는 [초대·멤버 관리](../COLLABORATION.md), [이슈](../ISSUES.md), [저장소 연결](../REPOSITORY_CONNECTION.md)을 참고한다.
 
 dbdiagram에서 그릴 때는 [erd.sql](erd.sql) 전체를 **Import → MySQL**에서 가져온다. 기본 편집창에 직접 붙여넣으려면 [erd.dbml](erd.dbml)을 사용한다. SQL에는 21개 테이블의 PK·FK·고유 제약·CHECK·인덱스를 포함했고, [공식 CLI](https://dbml.dbdiagram.io/cli/)의 MySQL → DBML 변환으로 호환성을 확인했다. SQL은 DDL 원본이고 DBML은 그림 편집용 파생 파일이다.
 
@@ -9,7 +9,8 @@ dbdiagram에서 그릴 때는 [erd.sql](erd.sql) 전체를 **Import → MySQL**�
 ## 1. 범위와 가정
 
 - 현재 화면: 개인 알림함, 내 작업, 대시보드, 이슈, PR, 변경 이력, 패치노트, 빌드·배포, 프로젝트 설정.
-- 기획에 포함됐지만 서버 미구현: GitHub 로그인, 프로젝트 생성·초대·권한, 실제 GitHub 연동·동기화.
+- 구현: GitHub 로그인과 세션, 프로젝트 생성·설정·초대·권한·탈퇴·소유권 이전, 저장소 연결, 이슈·PR 조회·작성·수동 수집.
+- 후속 기능: 실제 알림함 조회·읽음, 웹훅·주기 수집, PR 연결·상태 계산, 패치노트·빌드·배포 API.
 - 회원 한 명은 여러 프로젝트에 참여하고, 프로젝트 하나에 여러 저장소를 연결한다.
 - **설계 가정:** 동일 GitHub 저장소를 여러 프로젝트에서 사용할 수 있다. `repositories`는 프로젝트별 연결 및 조회용 복제본이다. 원본 GitHub ID는 여러 프로젝트에 나타날 수 있지만 동일 프로젝트 안에서는 중복 연결하지 않는다.
 - 현재와 같이 이슈 담당자는 한 명 또는 미지정이다. 이슈와 PR은 다대다이며, 첫 버전에서는 같은 저장소 연결 안에서만 연결한다.
@@ -62,6 +63,7 @@ erDiagram
         bigint project_id PK,FK
         bigint user_id PK,FK
         varchar role
+        bigint version
     }
     repositories {
         bigint id PK
@@ -277,6 +279,7 @@ erDiagram
 - 복합 PK: `(project_id, user_id)`, 각각 projects와 users를 참조.
 - `role` VARCHAR(20): `ADMIN`, `MEMBER`, `VIEWER`.
 - `job_title` VARCHAR(100)?, `joined_at` DATETIME, `left_at` DATETIME?.
+- `version` BIGINT DEFAULT 0: JPA `@Version`. 권한 변경·내보내기·나가기·소유권 이전 대상의 오래된 요청을 거부한다. 재참여 시에도 버전을 초기화하지 않는다.
 - `notify_team_updates` BOOLEAN, `notify_deployments` BOOLEAN, `weekly_summary_enabled` BOOLEAN.
 - 소유자는 `projects.owner_user_id`로 판정하고, 별도 `OWNER` 역할을 중복 저장하지 않는다.
 - 소유권 이전과 멤버십 변경은 트랜잭션으로 처리한다. 소유자의 탈퇴는 이전이 완료될 때까지 막는다.
@@ -393,7 +396,7 @@ erDiagram
 - `target_account_id` FK → github_accounts?, `accepted_by_user_id` FK → users?.
 - `token_hash` VARCHAR(64) UNIQUE, `granted_role` VARCHAR(20), `expires_at` DATETIME.
 - `accepted_at` DATETIME?, `revoked_at` DATETIME?.
-- 이번 초안은 1회 수락 초대를 가정한다. 대상 계정이 있으면 해당 계정만 수락하고, 없으면 링크를 가진 로그인 사용자가 명시적으로 수락한다.
+- 구현은 1회 수락 초대를 사용한다. 대상 계정이 있으면 해당 계정만 수락하고, 없으면 링크를 가진 로그인 사용자가 명시적으로 수락한다.
 - 원문 초대 토큰은 저장하지 않는다. 유효성 검사·소비·멤버 생성은 트랜잭션으로 묶어 중복 수락을 막는다.
 - accepted_at과 accepted_by_user_id는 둘 다 NULL이거나 둘 다 있어야 하고, 수락과 취소는 동시에 기록하지 못한다. 수락 시각은 발급 이후·만료 이전이어야 한다. expires_at은 created_at보다 뒤여야 한다.
 - 소유권 이전은 초대 역할과 별도로 처리한다.
@@ -489,7 +492,7 @@ erDiagram
 
 - github_updated_at은 GitHub 원본의 updated_at, updated_at은 로컬 DB 수정 시각이다. last_fetched_at은 관측 시각이므로 원본 버전의 대체값으로 사용하지 않는다.
 - 수신 payload의 원본 시각이 저장된 시각보다 오래되면 현재 상태를 덮어쓰지 않는다. 같은 시각의 서로 다른 사건, 비교 시각이 없는 사건은 최신 원본을 다시 조회한다. 도착 순서나 delivery ID의 크기로 최신 여부를 판단하지 않는다.
-- projects·issues·pull_requests·patch_notes의 version은 JPA `@Version`에 대응한다. 별도 동기화 SQL도 WHERE version=:expected 조건과 version 증가를 사용해야 한다. 충돌하면 새로 읽고 원본 시각을 다시 비교한다. 컬럼 추가만으로 역순·동시 수정이 자동 해결되지는 않는다.
+- projects·project_members·issues·pull_requests·patch_notes의 version은 JPA `@Version`에 대응한다. 별도 동기화 SQL도 WHERE version=:expected 조건과 version 증가를 사용해야 한다. 충돌하면 새로 읽고 원본 시각을 다시 비교한다. 컬럼 추가만으로 역순·동시 수정이 자동 해결되지는 않는다.
 - 리뷰 요청과 리뷰는 PR 단위, 배포 상태는 저장소·배포 단위로 처리 순서를 조정하고 원본 API로 최종 확인한다. payload 시간 해상도가 같거나 과거 시각을 판별할 수 없으면 현재 상태를 재조회한다.
 - GitHub 원본 컬럼과 zello의 work_status·완료 조건·회의 맥락·team_summary 등 서비스 컬럼의 갱신 책임을 분리한다. 동기화 UPDATE가 서비스에서 편집한 값을 통째로 덮어쓰지 않게 한다.
 - PUBLISHED 전환은 원본 ID·번호·필요 상태와 함께 한 UPDATE로 기록한다. 검증된 상태 전이는 서비스가 결정하고 DB CHECK는 잘못된 행 조합을 마지막으로 막는다.
@@ -554,7 +557,7 @@ UNIQUE 및 FK 인덱스 외에 실제 조회 조건에 맞춰 다음을 추가�
 
 - 공식 `@dbml/cli`의 MySQL → DBML → MySQL 변환으로 구문과 테이블·FK·CHECK 보존을 확인한다. DBML은 ERD 편집용이며 실제 배포용 SQL 원본은 erd.sql이다.
 - Mermaid 도메인 관계도와 전체 관계도의 문법을 확인한다.
-- `server/zello`에서 `python3 docs/checks/verify_erd.py`를 실행하면, 별도 패키지 없이 메모리 SQLite에서 21개 제약 시나리오를 검증한다. 정상 연결, 다른 저장소·프로젝트 연결 거부, NULL을 통한 소속 검사 우회 거부, 알림 수신·개별 읽음, 탈퇴·발행·병합·초대·동기화 상태 조합을 포함한다.
+- `server/zello`에서 `python3 docs/checks/verify_erd.py`를 실행하면, 별도 패키지 없이 메모리 SQLite에서 22개 제약 시나리오를 검증한다. 정상 연결, 다른 저장소·프로젝트 연결 거부, NULL을 통한 소속 검사 우회 거부, 알림 수신·개별 읽음, 탈퇴·발행·병합·초대·동기화 상태 조합을 포함한다.
 - 이 검사는 MySQL 전용 테이블 옵션·타임스탬프·인덱스·자동 증가 표기를 SQLite에 맞게 바꾸어 **관계·CHECK 논리**를 확인한다. MySQL 엔진에서의 실행 검증과 API 권한·이벤트 순서 처리 검증을 대신하지 않는다. 실제 MySQL 적용 전에는 별도의 빈 스키마에서 DDL 생성과 무결성 검증을 수행해야 한다.
 
 OAuth 전환: repositories의 authorization_method/installation_id 조합 CHECK를 포함하여 현재 업무 스키마는 49개 CHECK를 갖는다. 운영 적용은 V3 마이그레이션으로 수행한다.
