@@ -21,10 +21,13 @@ public interface PullRequestRepository extends JpaRepository<PullRequest, Long> 
             where p.repositoryId in :repositoryIds and p.repository.projectId = :projectId
               and p.publishStatus = com.zello.zello.domain.common.PublishStatus.PUBLISHED
               and p.state in :states and (:authorAccountId is null or p.authorAccountId = :authorAccountId)
+              and (:reviewerAccountId is null or (p.draft = false and exists (
+                    select 1 from PullRequestReviewer r where r.id.pullRequestId = p.id
+                      and r.id.reviewerAccountId = :reviewerAccountId and r.requestStatus = :requested)))
             order by p.githubUpdatedAt desc, p.id desc
             """)
     Page<PullRequest> search(Long projectId, Collection<Long> repositoryIds, Collection<PullRequest.State> states,
-                             Long authorAccountId, Pageable pageable);
+                             Long authorAccountId, Long reviewerAccountId, PullRequestReviewer.RequestStatus requested, Pageable pageable);
 
     @EntityGraph(attributePaths = {"repository", "authorAccount"})
     @Query("""

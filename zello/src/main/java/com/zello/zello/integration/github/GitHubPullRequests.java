@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -105,24 +106,69 @@ public class GitHubPullRequests {
         }
         var fetched = new ArrayList<Fetched>(remotes.size());
         for (var remote : remotes) {
-            var decision = "open".equals(remote.state()) ? decision(token, owner, repository, remote.number()) : PullRequest.ReviewDecision.UNKNOWN;
-            fetched.add(new Fetched(remote, decision));
+            fetched.add("open".equals(remote.state()) ? reviews(token, owner, repository, remote)
+                    : new Fetched(remote, PullRequest.ReviewDecision.UNKNOWN));
         }
         return fetched;
     }
 
-    /** 리뷰어별 마지막 결정만 본다. 수정 요청이 있으면 우선, 그다음 승인. 댓글·대기 리뷰는 무시한다. */
-    private PullRequest.ReviewDecision decision(String token, String owner, String repository, int number) {
-        var response = get(token, Review[].class, "/repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100", owner, repository, number);
+    /**
+     * 리뷰어별 마지막 결정만 본다. 수정 요청이 있으면 우선, 그다음 승인. 댓글·대기 리뷰는 결정에서 무시한다.
+     * 리뷰를 제출하면 GitHub가 requested_reviewers에서 빼므로, 리뷰한 사람도 따로 모아 "맡긴 리뷰어"로 남긴다.
+     */
+    private Fetched reviews(String token, String owner, String repository, Remote remote) {
+        var response = get(token, Review[].class, "/repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100", owner, repository, remote.number());
         if (response.getBody() == null) throw invalid();
         Map<Long, String> latest = new HashMap<>();
+        Map<Long, User> reviewed = new LinkedHashMap<>();
+        long authorId = remote.user() == null ? -1 : remote.user().id();
         for (var review : response.getBody()) {
             if (review.user() == null) continue;
             if (List.of("APPROVED", "CHANGES_REQUESTED", "DISMISSED").contains(review.state())) latest.put(review.user().id(), review.state());
+            if (!"PENDING".equals(review.state()) && review.user().id() > 0 && review.user().id() != authorId && review.user().login() != null) {
+                reviewed.putIfAbsent(review.user().id(), review.user());
+            }
         }
-        if (latest.containsValue("CHANGES_REQUESTED")) return PullRequest.ReviewDecision.CHANGES_REQUESTED;
-        if (latest.containsValue("APPROVED")) return PullRequest.ReviewDecision.APPROVED;
-        return PullRequest.ReviewDecision.PENDING;
+        var decision = latest.containsValue("CHANGES_REQUESTED") ? PullRequest.ReviewDecision.CHANGES_REQUESTED
+                : latest.containsValue("APPROVED") ? PullRequest.ReviewDecision.APPROVED : PullRequest.ReviewDecision.PENDING;
+        return new Fetched(remote, decision, List.copyOf(reviewed.values()));
+    }
+
+    /** 리뷰어로 지정할 수 있는 사람. 저장소의 assignees 목록을 쓴다. */
+    public Candidates reviewerCandidates(String token, String owner, String repository) {
+        requireName(owner, repository);
+        var users = new ArrayList<User>();
+        boolean hasMore = false;
+        for (int page = 1; page <= MAX_BRANCH_PAGES; page++) {
+            var response = get(token, User[].class, "/repos/{owner}/{repo}/assignees?per_page=100&page={page}", owner, repository, page);
+            if (response.getBody() == null) throw invalid();
+            for (var user : response.getBody()) {
+                if (user == null || user.id() <= 0 || user.login() == null || user.login().isBlank()) throw invalid();
+                users.add(user);
+            }
+            hasMore = hasNext(response);
+            if (!hasMore) break;
+        }
+        return new Candidates(users, hasMore);
+    }
+
+    /** 만들어진 PR에 리뷰어를 요청한다. 같은 사람을 다시 요청해도 GitHub에서 중복되지 않는다. */
+    public Remote requestReviewers(String token, String owner, String repository, int number, List<String> logins) {
+        requireName(owner, repository);
+        try {
+            var updated = client.post().uri("/repos/{owner}/{repo}/pulls/{number}/requested_reviewers", owner, repository, number)
+                    .headers(headers -> headers.setBearerAuth(token)).body(Map.of("reviewers", logins)).retrieve().body(Remote.class);
+            validate(updated);
+            return updated;
+        } catch (RestClientResponseException exception) {
+            int status = exception.getStatusCode().value();
+            if (status == 401) throw new ApiException(401, "GITHUB_REAUTH_REQUIRED", "GitHub에 다시 로그인해 주세요.");
+            if (status == 422) throw new ApiException(422, "REVIEWER_REJECTED", "저장소에 접근할 수 없거나 PR 작성자인 사람은 리뷰어로 지정할 수 없어요.");
+            if (status == 403 || status == 404) throw new ApiException(403, "GITHUB_ACCESS_RESTRICTED", "리뷰어를 지정할 권한이 없어요.");
+            throw new ApiException(502, "GITHUB_UNAVAILABLE", "GitHub 응답을 받지 못했습니다.");
+        } catch (RestClientException exception) {
+            throw new ApiException(502, "GITHUB_UNAVAILABLE", "GitHub에 연결하지 못했습니다.");
+        }
     }
 
     private void validate(Remote remote) {
@@ -131,7 +177,8 @@ public class GitHubPullRequests {
                 || !("open".equals(remote.state()) || "closed".equals(remote.state()))
                 || remote.head() == null || remote.head().ref() == null || remote.head().ref().isBlank() || remote.head().ref().length() > 255
                 || remote.base() == null || remote.base().ref() == null || remote.base().ref().isBlank() || remote.base().ref().length() > 255
-                || remote.updatedAt() == null || (remote.user() != null && (remote.user().login() == null || remote.user().id() <= 0))) {
+                || remote.updatedAt() == null || (remote.user() != null && (remote.user().login() == null || remote.user().id() <= 0))
+                || remote.requestedReviewers().stream().anyMatch(reviewer -> reviewer == null || reviewer.login() == null || reviewer.id() <= 0)) {
             throw invalid();
         }
     }
@@ -156,7 +203,16 @@ public class GitHubPullRequests {
     }
     private ApiException invalid() { return new ApiException(502, "INVALID_GITHUB_RESPONSE", "GitHub PR 정보를 확인하지 못했습니다."); }
 
-    public record Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision) { }
+    /** reviewed는 리뷰를 제출한 사람(PR 작성자 제외). 열린 PR만 채운다. */
+    public record Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision, List<User> reviewed) {
+        public Fetched {
+            reviewed = reviewed == null ? List.of() : List.copyOf(reviewed);
+        }
+
+        public Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision) { this(pull, reviewDecision, List.of()); }
+    }
+
+    public record Candidates(List<User> users, boolean hasMore) { }
 
     public record NewPull(String title, String body, String head, String base, boolean draft) { }
 
@@ -169,7 +225,17 @@ public class GitHubPullRequests {
     public record Remote(long id, int number, @JsonProperty("html_url") String htmlUrl, String title, String body, String state,
                          boolean draft, User user, Ref head, Ref base, @JsonProperty("merge_commit_sha") String mergeCommitSha,
                          @JsonProperty("created_at") Instant createdAt, @JsonProperty("updated_at") Instant updatedAt,
-                         @JsonProperty("closed_at") Instant closedAt, @JsonProperty("merged_at") Instant mergedAt) { }
+                         @JsonProperty("closed_at") Instant closedAt, @JsonProperty("merged_at") Instant mergedAt,
+                         @JsonProperty("requested_reviewers") List<User> requestedReviewers) {
+        public Remote {
+            requestedReviewers = requestedReviewers == null ? List.of() : List.copyOf(requestedReviewers);
+        }
+
+        public Remote(long id, int number, String htmlUrl, String title, String body, String state, boolean draft, User user,
+                      Ref head, Ref base, String mergeCommitSha, Instant createdAt, Instant updatedAt, Instant closedAt, Instant mergedAt) {
+            this(id, number, htmlUrl, title, body, state, draft, user, head, base, mergeCommitSha, createdAt, updatedAt, closedAt, mergedAt, List.of());
+        }
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record User(long id, String login, String type, @JsonProperty("avatar_url") String avatarUrl) { }
