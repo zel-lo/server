@@ -45,6 +45,17 @@ class GitHubPullRequestsTests {
     }
 
     @Test
+    void readsRequestedReviewersAndTreatsAMissingListAsEmpty() {
+        server.expect(requestTo(BASE + "?state=all&sort=updated&direction=desc&per_page=100&page=1"))
+                .andRespond(withSuccess("[" + pull(1, 10, "closed", "null").replace("\"title\"", "\"requested_reviewers\":[{\"id\":7,\"login\":\"dev\"}],\"title\"")
+                        + "," + pull(2, 11, "closed", "null") + "]", MediaType.APPLICATION_JSON));
+        var result = github.fetch("token", "team", "server");
+        assertThat(result.get(0).pull().requestedReviewers()).extracting(GitHubPullRequests.User::login).containsExactly("dev");
+        assertThat(result.get(1).pull().requestedReviewers()).isEmpty();
+        server.verify();
+    }
+
+    @Test
     void changesRequestedWinsAndDismissedReviewsDoNotCount() {
         server.expect(requestTo(BASE + "?state=all&sort=updated&direction=desc&per_page=100&page=1"))
                 .andRespond(withSuccess("[" + pull(1, 10, "open", "null") + "," + pull(2, 11, "open", "null") + "]", MediaType.APPLICATION_JSON));
@@ -127,6 +138,46 @@ class GitHubPullRequestsTests {
                 error -> { assertThat(error.code()).isEqualTo("GITHUB_ACCESS_RESTRICTED"); assertThat(error.getMessage()).doesNotContain("secret"); });
         assertThatThrownBy(() -> github.create("token", "team", "server", input)).isInstanceOfSatisfying(ApiException.class,
                 error -> { assertThat(error.code()).isEqualTo("GITHUB_RESULT_UNKNOWN"); assertThat(error.getMessage()).doesNotContain("gateway detail"); });
+        server.verify();
+    }
+
+    @Test
+    void collectsPeopleWhoReviewedExceptTheAuthorAndUnsubmittedReviews() {
+        server.expect(requestTo(BASE + "?state=all&sort=updated&direction=desc&per_page=100&page=1"))
+                .andRespond(withSuccess("[" + pull(1, 10, "open", "null") + "]", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/10/reviews?per_page=100")).andRespond(withSuccess("""
+                [{"user":{"id":8,"login":"dev-a"},"state":"COMMENTED"},{"user":{"id":8,"login":"dev-a"},"state":"APPROVED"},
+                 {"user":{"id":7,"login":"writer"},"state":"COMMENTED"},{"user":{"id":9,"login":"dev-b"},"state":"PENDING"}]
+                """, MediaType.APPLICATION_JSON));
+        var result = github.fetch("token", "team", "server");
+        assertThat(result.get(0).reviewed()).extracting(GitHubPullRequests.User::login).containsExactly("dev-a");
+        server.verify();
+    }
+
+    @Test
+    void requestsReviewersAndMapsRejectionsSafely() {
+        var url = "https://api.github.com/repos/team/server/pulls/12/requested_reviewers";
+        server.expect(requestTo(url)).andExpect(method(org.springframework.http.HttpMethod.POST))
+                .andExpect(jsonPath("$.reviewers[0]").value("dev-a"))
+                .andRespond(withSuccess(pull(5, 12, "open", "null").replace("\"title\"", "\"requested_reviewers\":[{\"id\":8,\"login\":\"dev-a\"}],\"title\""),
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo(url)).andRespond(withStatus(org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT).body("private detail"));
+        assertThat(github.requestReviewers("token", "team", "server", 12, java.util.List.of("dev-a")).requestedReviewers())
+                .extracting(GitHubPullRequests.User::login).containsExactly("dev-a");
+        assertThatThrownBy(() -> github.requestReviewers("token", "team", "server", 12, java.util.List.of("writer")))
+                .isInstanceOfSatisfying(ApiException.class, error -> {
+                    assertThat(error.code()).isEqualTo("REVIEWER_REJECTED"); assertThat(error.getMessage()).doesNotContain("private detail"); });
+        server.verify();
+    }
+
+    @Test
+    void listsReviewerCandidatesFromAssignees() {
+        server.expect(requestTo("https://api.github.com/repos/team/server/assignees?per_page=100&page=1"))
+                .andRespond(withSuccess("[{\"id\":7,\"login\":\"writer\",\"type\":\"User\"},{\"id\":8,\"login\":\"dev-a\",\"type\":\"User\"}]",
+                        MediaType.APPLICATION_JSON));
+        var candidates = github.reviewerCandidates("token", "team", "server");
+        assertThat(candidates.users()).extracting(GitHubPullRequests.User::login).containsExactly("writer", "dev-a");
+        assertThat(candidates.hasMore()).isFalse();
         server.verify();
     }
 
