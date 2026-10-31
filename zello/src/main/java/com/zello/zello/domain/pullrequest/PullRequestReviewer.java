@@ -68,6 +68,12 @@ public class PullRequestReviewer {
         this.updatedAt = EntitySupport.now();
     }
 
+    /** GitHub의 검토 요청 목록에서 빠졌을 때(리뷰 제출, 요청 취소) 대기 목록에서 뺀다. */
+    public void remove() {
+        this.requestStatus = RequestStatus.REMOVED;
+        this.updatedAt = EntitySupport.now();
+    }
+
     public void completeReview() {
         this.requestStatus = RequestStatus.COMPLETED;
         this.updatedAt = EntitySupport.now();

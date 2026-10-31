@@ -14,6 +14,7 @@ import com.zello.zello.project.ProjectService;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Objects;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -58,7 +59,8 @@ public class PullRequestPublishService {
             var row = replay.get();
             // 같은 키로 다른 내용을 보내면 이전 행의 내용으로 잘못 발행될 수 있으므로 거부한다.
             boolean sameRequest = row.getRepositoryId().equals(repositoryId) && Long.valueOf(userId).equals(row.getCreatedByUserId())
-                    && row.getTitle().equals(draft.title()) && draft.body().equals(row.getBody()) && row.getHeadBranch().equals(draft.headBranch())
+                    && row.getTitle().equals(draft.title()) && Objects.equals(draft.body(), row.getBody())
+                    && Objects.equals(draft.teamSummary(), row.getTeamSummary()) && row.getHeadBranch().equals(draft.headBranch())
                     && row.getBaseBranch().equals(draft.baseBranch()) && row.getDraft() == draft.draft();
             if (!sameRequest) {
                 throw new ApiException(409, "REQUEST_KEY_CONFLICT", "이미 다른 요청에 사용한 요청 키입니다.");
@@ -76,7 +78,7 @@ public class PullRequestPublishService {
         }
         var user = users.findWithGithubAccountById(userId).orElseThrow(() -> new ApiException(401, "AUTHENTICATION_REQUIRED", "로그인이 필요합니다."));
         var saved = pullRequests.saveAndFlush(PullRequest.builder().repository(repository).authorAccount(user.getGithubAccount()).createdByUser(user)
-                .title(draft.title()).body(draft.body()).teamSummary(draft.body()).headBranch(draft.headBranch()).baseBranch(draft.baseBranch())
+                .title(draft.title()).body(draft.body()).teamSummary(draft.teamSummary()).headBranch(draft.headBranch()).baseBranch(draft.baseBranch())
                 .state(PullRequest.State.OPEN).draft(draft.draft()).publishStatus(PublishStatus.PENDING)
                 .publishRequestKey(draft.requestKey()).lastFetchedAt(now).build());
         return new Reservation(saved.getId(), false, false);
@@ -127,7 +129,8 @@ public class PullRequestPublishService {
 
     private static LocalDateTime utc(Instant instant) { return instant == null ? null : LocalDateTime.ofInstant(instant, ZoneOffset.UTC); }
 
-    public record Draft(String title, String body, String headBranch, String baseBranch, boolean draft, String requestKey) { }
+    /** teamSummary는 zello에만, body는 GitHub PR 본문으로 들어간다. body는 비어 있으면 null. */
+    public record Draft(String title, String teamSummary, String body, String headBranch, String baseBranch, boolean draft, String requestKey) { }
 
     /** published면 같은 요청 키로 이미 끝난 요청이고, retry면 결과 불명·실패 상태에서의 재시도다. */
     public record Reservation(Long pullRequestId, boolean retry, boolean published) { }

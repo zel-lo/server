@@ -9,6 +9,8 @@ import com.zello.zello.domain.github.GitHubAccountRepository;
 import com.zello.zello.domain.project.ProjectRepository;
 import com.zello.zello.domain.pullrequest.PullRequest;
 import com.zello.zello.domain.pullrequest.PullRequestRepository;
+import com.zello.zello.domain.pullrequest.PullRequestReviewer;
+import com.zello.zello.domain.pullrequest.PullRequestReviewerRepository;
 import com.zello.zello.domain.repository.GitRepository;
 import com.zello.zello.domain.repository.GitRepositoryRepository;
 import com.zello.zello.domain.user.UserRepository;
@@ -21,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -38,15 +41,18 @@ public class PullRequestService {
     private final PullRequestRepository pullRequests;
     private final GitHubAccountRepository accounts;
     private final UserRepository users;
+    private final PullRequestReviewerRepository reviewers;
 
     public PullRequestService(ProjectService projects, ProjectRepository projectRepository, GitRepositoryRepository repositories,
-                              PullRequestRepository pullRequests, GitHubAccountRepository accounts, UserRepository users) {
+                              PullRequestRepository pullRequests, GitHubAccountRepository accounts, UserRepository users,
+                              PullRequestReviewerRepository reviewers) {
         this.projects = projects;
         this.projectRepository = projectRepository;
         this.repositories = repositories;
         this.pullRequests = pullRequests;
         this.accounts = accounts;
         this.users = users;
+        this.reviewers = reviewers;
     }
 
     public List<GitRepository> connectedRepositories(long projectId, long userId) {
@@ -58,10 +64,24 @@ public class PullRequestService {
     public PullRequestPage list(long projectId, long userId, Collection<Long> repositoryIds, Filter filter, int page, int size) {
         projects.requireMember(projectId, userId, false);
         if (repositoryIds.isEmpty()) return new PullRequestPage(List.of(), page, false, new Counts(0, 0, 0));
-        Long authorAccountId = filter.mine() ? users.findById(userId).orElseThrow(ProjectService::notFound).getGithubAccountId() : null;
-        var result = pullRequests.search(projectId, repositoryIds, filter.states(), authorAccountId, PageRequest.of(page - 1, size));
-        return new PullRequestPage(result.getContent().stream().map(pull -> PullRequestView.from(pull, null)).toList(), page, result.hasNext(),
-                counts(projectId, repositoryIds, authorAccountId));
+        Long accountId = filter.mine() || filter.reviewing() ? users.findById(userId).orElseThrow(ProjectService::notFound).getGithubAccountId() : null;
+        // GitHub 계정이 없으면 내 PR도, 내 검토 요청도 없다. 필터가 풀려 전체가 보이면 안 된다.
+        if ((filter.mine() || filter.reviewing()) && accountId == null) return new PullRequestPage(List.of(), page, false, new Counts(0, 0, 0));
+        Long authorAccountId = filter.mine() ? accountId : null;
+        Long reviewerAccountId = filter.reviewing() ? accountId : null;
+        // 검토 요청은 열린 PR에만 있다. 닫힌 PR에 남은 요청 기록은 "맡긴 리뷰어" 표시용이다.
+        var states = filter.reviewing() ? EnumSet.of(PullRequest.State.OPEN) : filter.states();
+        if (filter.reviewing() && !filter.states().contains(PullRequest.State.OPEN)) {
+            return new PullRequestPage(List.of(), page, false, new Counts(0, 0, 0));
+        }
+        var requested = PullRequestReviewer.RequestStatus.REQUESTED;
+        var result = pullRequests.search(projectId, repositoryIds, states, authorAccountId, reviewerAccountId, requested,
+                PageRequest.of(page - 1, size));
+        var reviewersByPull = reviewersOf(result.getContent().stream().map(PullRequest::getId).toList());
+        return new PullRequestPage(result.getContent().stream()
+                .map(pull -> PullRequestView.from(pull, null, reviewersByPull.getOrDefault(pull.getId(), List.of()))).toList(),
+                page, result.hasNext(), filter.reviewing() ? new Counts(result.getTotalElements(), 0, 0)
+                        : counts(projectId, repositoryIds, authorAccountId));
     }
 
     public PullRequest find(long projectId, long userId, long pullRequestId) {
@@ -71,7 +91,45 @@ public class PullRequestService {
                 .orElseThrow(() -> new ApiException(404, "PULL_REQUEST_NOT_FOUND", "PR을 찾을 수 없습니다."));
     }
 
-    public PullRequestView detail(PullRequest pull) { return PullRequestView.from(pull, pull.getBody()); }
+    public PullRequestView detail(PullRequest pull) {
+        return PullRequestView.from(pull, pull.getBody(), reviewersOf(List.of(pull.getId())).getOrDefault(pull.getId(), List.of()));
+    }
+
+    /** zello에서만 쓰는 팀 요약을 고친다. GitHub 본문은 건드리지 않는다. */
+    @Transactional
+    public PullRequestView updateTeamSummary(long projectId, long userId, long pullRequestId, String teamSummary, long version) {
+        projects.requireWriter(projectId, userId);
+        var pull = find(projectId, userId, pullRequestId);
+        if (pull.getVersion() != version) {
+            throw new ApiException(409, "PULL_REQUEST_CONFLICT", "다른 사람이 먼저 수정했어요. 새로고침한 뒤 다시 시도해 주세요.");
+        }
+        pull.updateTeamSummary(teamSummary == null || teamSummary.isBlank() ? null : teamSummary.strip());
+        pullRequests.saveAndFlush(pull);
+        return detail(pull);
+    }
+
+    /** zello에서 PR을 만든 직후 GitHub에 요청한 리뷰어를 기록한다. */
+    @Transactional
+    public void applyRequestedReviewers(long pullRequestId, List<GitHubPullRequests.User> requested) {
+        var pull = pullRequests.findById(pullRequestId).orElseThrow(() -> new ApiException(404, "PULL_REQUEST_NOT_FOUND", "PR을 찾을 수 없습니다."));
+        Map<Long, PullRequestReviewer> stored = new HashMap<>();
+        reviewers.findByIdPullRequestIdIn(List.of(pullRequestId)).forEach(row -> stored.put(row.getId().getReviewerAccountId(), row));
+        syncReviewers(pull, requested, List.of(), false, stored, new HashMap<>(), EntitySupport.now());
+    }
+
+    public long githubId(long userId) {
+        return users.findWithGithubAccountById(userId).orElseThrow(ProjectService::notFound).getGithubAccount().getGithubId();
+    }
+
+    private Map<Long, List<Reviewer>> reviewersOf(Collection<Long> pullRequestIds) {
+        if (pullRequestIds.isEmpty()) return Map.of();
+        var visible = EnumSet.of(PullRequestReviewer.RequestStatus.REQUESTED, PullRequestReviewer.RequestStatus.COMPLETED);
+        return reviewers.findByIdPullRequestIdInAndRequestStatusIn(pullRequestIds, visible).stream()
+                .sorted(java.util.Comparator.comparing(row -> row.getReviewerAccount().getLogin(), String.CASE_INSENSITIVE_ORDER))
+                .collect(Collectors.groupingBy(row -> row.getId().getPullRequestId(),
+                        Collectors.mapping(row -> new Reviewer(row.getReviewerAccount().getLogin(), row.getReviewerAccount().getAvatarUrl()),
+                                Collectors.toList())));
+    }
 
     /** 외부 호출은 트랜잭션 밖에서 끝내고, 여기서는 프로젝트 행 잠금 안에서 반영만 한다. */
     @Transactional
@@ -88,6 +146,13 @@ public class PullRequestService {
         var inFlight = new ArrayList<>(rows.stream().filter(pull -> pull.getGithubPrId() == null
                 && (pull.getPublishStatus() == PublishStatus.PENDING || pull.getPublishStatus() == PublishStatus.UNKNOWN)).toList());
         Map<Long, GitHubAccount> authors = new HashMap<>();
+        Map<Long, Map<Long, PullRequestReviewer>> storedReviewers = new HashMap<>();
+        if (!rows.isEmpty()) {
+            for (var reviewer : reviewers.findByIdPullRequestIdIn(rows.stream().map(PullRequest::getId).toList())) {
+                storedReviewers.computeIfAbsent(reviewer.getId().getPullRequestId(), id -> new HashMap<>())
+                        .put(reviewer.getId().getReviewerAccountId(), reviewer);
+            }
+        }
         var now = EntitySupport.now();
         for (var item : fetched) {
             var remote = item.pull();
@@ -108,22 +173,61 @@ public class PullRequestService {
             var state = remote.mergedAt() != null ? PullRequest.State.MERGED
                     : "open".equals(remote.state()) ? PullRequest.State.OPEN : PullRequest.State.CLOSED;
             var title = remote.title().length() > 255 ? remote.title().substring(0, 255) : remote.title();
+            // 리뷰는 열린 PR만 조회한다. 닫히거나 병합된 PR은 열려 있을 때 마지막으로 계산한 결과를 유지한다.
+            var decision = state != PullRequest.State.OPEN && current != null ? current.getReviewDecision() : item.reviewDecision();
+            PullRequest target;
             if (current == null) {
-                pullRequests.save(PullRequest.builder().repository(repository).authorAccount(author).githubPrId(remote.id())
+                target = pullRequests.save(PullRequest.builder().repository(repository).authorAccount(author).githubPrId(remote.id())
                         .githubNumber(remote.number()).githubUrl(remote.htmlUrl()).title(title).body(remote.body())
                         .headBranch(remote.head().ref()).baseBranch(remote.base().ref()).headSha(remote.head().sha())
                         .mergeCommitSha(remote.mergeCommitSha()).state(state).draft(remote.draft() && state != PullRequest.State.MERGED)
-                        .reviewDecision(item.reviewDecision()).openedAt(utc(remote.createdAt())).closedAt(utc(remote.closedAt()))
+                        .reviewDecision(decision).openedAt(utc(remote.createdAt())).closedAt(utc(remote.closedAt()))
                         .mergedAt(utc(remote.mergedAt())).publishStatus(PublishStatus.PUBLISHED)
                         .githubUpdatedAt(utc(remote.updatedAt())).lastFetchedAt(now).build());
             } else {
                 current.syncFromRemote(author, remote.htmlUrl(), title, remote.body(), remote.head().ref(), remote.base().ref(),
-                        remote.head().sha(), remote.mergeCommitSha(), state, remote.draft(), item.reviewDecision(),
+                        remote.head().sha(), remote.mergeCommitSha(), state, remote.draft(), decision,
                         utc(remote.createdAt()), utc(remote.closedAt()), utc(remote.mergedAt()), utc(remote.updatedAt()), now);
+                target = current;
             }
+            // 리뷰 목록은 열린 PR만 조회하므로, 닫힌 PR은 기존 기록을 지우지 않는다.
+            syncReviewers(target, remote.requestedReviewers(), item.reviewed(), target.getState() == PullRequest.State.OPEN,
+                    storedReviewers.computeIfAbsent(target.getId(), id -> new HashMap<>()), authors, now);
         }
         repository.recordSync(now);
         return fetched.size();
+    }
+
+    /**
+     * 맡긴 리뷰어를 GitHub 기준으로 맞춘다. 요청 중이면 REQUESTED, 리뷰를 제출했으면 COMPLETED.
+     * complete가 true면 둘 다 아닌 사람(요청 취소)은 REMOVED로 뺀다.
+     */
+    private void syncReviewers(PullRequest pull, List<GitHubPullRequests.User> requested, List<GitHubPullRequests.User> reviewed,
+                               boolean complete, Map<Long, PullRequestReviewer> stored, Map<Long, GitHubAccount> authors, LocalDateTime now) {
+        var kept = new HashSet<Long>();
+        for (var user : requested) {
+            var account = authors.computeIfAbsent(user.id(), id -> author(user));
+            kept.add(account.getId());
+            var row = stored.get(account.getId());
+            if (row == null) stored.put(account.getId(), saveReviewer(pull, account, PullRequestReviewer.RequestStatus.REQUESTED, now));
+            else if (row.getRequestStatus() != PullRequestReviewer.RequestStatus.REQUESTED) row.requestAgain(now);
+        }
+        for (var user : reviewed) {
+            var account = authors.computeIfAbsent(user.id(), id -> author(user));
+            if (!kept.add(account.getId())) continue;
+            var row = stored.get(account.getId());
+            if (row == null) stored.put(account.getId(), saveReviewer(pull, account, PullRequestReviewer.RequestStatus.COMPLETED, now));
+            else if (row.getRequestStatus() != PullRequestReviewer.RequestStatus.COMPLETED) row.completeReview();
+        }
+        if (!complete) return;
+        stored.forEach((accountId, row) -> {
+            if (row.getRequestStatus() != PullRequestReviewer.RequestStatus.REMOVED && !kept.contains(accountId)) row.remove();
+        });
+    }
+
+    private PullRequestReviewer saveReviewer(PullRequest pull, GitHubAccount account, PullRequestReviewer.RequestStatus status, LocalDateTime now) {
+        return reviewers.save(PullRequestReviewer.builder().pullRequest(pull).reviewerAccount(account)
+                .requestStatus(status).requestedAt(now).updatedAt(now).build());
     }
 
     private GitHubAccount author(GitHubPullRequests.User user) {
@@ -150,7 +254,7 @@ public class PullRequestService {
 
     private static LocalDateTime utc(Instant instant) { return instant == null ? null : LocalDateTime.ofInstant(instant, ZoneOffset.UTC); }
 
-    public record Filter(EnumSet<PullRequest.State> states, boolean mine) { }
+    public record Filter(EnumSet<PullRequest.State> states, boolean mine, boolean reviewing) { }
 
     public record Counts(long open, long merged, long closed) { }
 
@@ -158,19 +262,31 @@ public class PullRequestService {
 
     public record Author(String login, String avatarUrl) { }
 
-    /** body는 상세 응답에만 담는다. 목록에서는 응답이 커지지 않도록 null로 두고 JSON에서 뺀다. */
+    public record Reviewer(String login, String avatarUrl) { }
+
+    /**
+     * body(GitHub 원본)는 상세 응답에만 담는다. 목록에서는 응답이 커지지 않도록 null로 두고 JSON에서 뺀다.
+     * reviewers는 요청 중이거나 리뷰를 제출한 사람이다. warning은 PR 생성 후 리뷰어 지정만 실패했을 때 담는다.
+     */
     public record PullRequestView(String id, String repositoryId, String repositoryOwner, String repositoryName, Integer number,
                                   String url, String title, String headBranch, String baseBranch, String state, boolean draft,
-                                  String reviewDecision, String teamSummary, Author author, Instant openedAt, Instant mergedAt,
-                                  Instant githubUpdatedAt, @JsonInclude(JsonInclude.Include.NON_NULL) String body) {
-        static PullRequestView from(PullRequest pull, String body) {
+                                  String reviewDecision, String teamSummary, Author author, List<Reviewer> reviewers, long version,
+                                  Instant openedAt, Instant mergedAt, Instant githubUpdatedAt,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) String body,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) String warning) {
+        static PullRequestView from(PullRequest pull, String body, List<Reviewer> reviewers) {
             var repo = pull.getRepository();
             var author = pull.getAuthorAccount();
             return new PullRequestView(pull.getId().toString(), repo.getId().toString(), repo.getOwnerLogin(), repo.getName(),
                     pull.getGithubNumber(), pull.getGithubUrl(), pull.getTitle(), pull.getHeadBranch(), pull.getBaseBranch(),
                     pull.getState().name(), pull.getDraft(), pull.getReviewDecision().name(), pull.getTeamSummary(),
-                    author == null ? null : new Author(author.getLogin(), author.getAvatarUrl()), instant(pull.getOpenedAt()),
-                    instant(pull.getMergedAt()), instant(pull.getGithubUpdatedAt()), body);
+                    author == null ? null : new Author(author.getLogin(), author.getAvatarUrl()), reviewers, pull.getVersion(),
+                    instant(pull.getOpenedAt()), instant(pull.getMergedAt()), instant(pull.getGithubUpdatedAt()), body, null);
+        }
+
+        public PullRequestView withWarning(String warning) {
+            return new PullRequestView(id, repositoryId, repositoryOwner, repositoryName, number, url, title, headBranch, baseBranch, state,
+                    draft, reviewDecision, teamSummary, author, reviewers, version, openedAt, mergedAt, githubUpdatedAt, body, warning);
         }
 
         private static Instant instant(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC); }

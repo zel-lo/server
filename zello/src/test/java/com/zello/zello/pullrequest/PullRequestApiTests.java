@@ -65,19 +65,127 @@ class PullRequestApiTests {
     }
 
     @Test
-    void createsAPullRequestOnGithubWithTheTeamSummaryAsBodyAndListsIt() throws Exception {
+    void createsAPullRequestKeepingTheTeamSummaryApartFromTheGithubBody() throws Exception {
         when(pulls.create(anyString(), eq("team"), eq("server"), any())).thenAnswer(invocation -> {
             assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             return remote(9, "feat/new", "main");
         });
-        create("key-0001-aaaa", "feat/new", "main", false).andExpect(status().isCreated())
+        createWith("key-0001-aaaa", "\"body\":\"GitHub 본문\"").andExpect(status().isCreated())
                 .andExpect(jsonPath("$.number").value(9)).andExpect(jsonPath("$.teamSummary").value("팀 요약"))
-                .andExpect(jsonPath("$.body").value("팀 요약")).andExpect(jsonPath("$.author.login").value("pr-user-" + ownerGithubId));
+                .andExpect(jsonPath("$.body").value("GitHub 본문")).andExpect(jsonPath("$.author.login").value("pr-user-" + ownerGithubId))
+                .andExpect(jsonPath("$.warning").doesNotExist());
         var sent = org.mockito.ArgumentCaptor.forClass(GitHubPullRequests.NewPull.class);
         verify(pulls).create(eq("session-token"), eq("team"), eq("server"), sent.capture());
-        assertThat(sent.getValue().body()).isEqualTo("팀 요약");
+        assertThat(sent.getValue().body()).isEqualTo("GitHub 본문");
         assertThat(sent.getValue().head()).isEqualTo("feat/new");
+        verify(pulls, never()).requestReviewers(anyString(), anyString(), anyString(), anyInt(), any());
         list("").andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].title").value("새 PR"));
+    }
+
+    @Test
+    void anEmptyGithubBodyIsSentAsBlankAndNotShownAsTheSummary() throws Exception {
+        when(pulls.create(anyString(), anyString(), anyString(), any())).thenReturn(remote(9, "feat/new", "main"));
+        create("key-0101-aaaa", "feat/new", "main", false).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.teamSummary").value("팀 요약")).andExpect(jsonPath("$.body").doesNotExist());
+        var sent = org.mockito.ArgumentCaptor.forClass(GitHubPullRequests.NewPull.class);
+        verify(pulls).create(anyString(), anyString(), anyString(), sent.capture());
+        assertThat(sent.getValue().body()).isEmpty();
+    }
+
+    @Test
+    void requestsReviewersRightAfterCreationAndListsThem() throws Exception {
+        when(pulls.create(anyString(), anyString(), anyString(), any())).thenReturn(remote(9, "feat/new", "main"));
+        long reviewerId = IDS.incrementAndGet();
+        when(pulls.requestReviewers(anyString(), eq("team"), eq("server"), eq(9), eq(List.of("dev-a"))))
+                .thenReturn(withRequested(remote(9, "feat/new", "main"), new GitHubPullRequests.User(reviewerId, "dev-a", "User", null)));
+        createWith("key-0102-aaaa", "\"reviewers\":[\"dev-a\",\"dev-a\"]").andExpect(status().isCreated())
+                .andExpect(jsonPath("$.reviewers[0].login").value("dev-a")).andExpect(jsonPath("$.warning").doesNotExist());
+        list("").andExpect(jsonPath("$.items[0].reviewers.length()").value(1)).andExpect(jsonPath("$.items[0].reviewers[0].login").value("dev-a"));
+    }
+
+    @Test
+    void aFailedReviewerRequestKeepsThePullRequestAndReturnsAWarning() throws Exception {
+        when(pulls.create(anyString(), anyString(), anyString(), any())).thenReturn(remote(9, "feat/new", "main"));
+        when(pulls.requestReviewers(anyString(), anyString(), anyString(), anyInt(), any()))
+                .thenThrow(new ApiException(422, "REVIEWER_REJECTED", "지정할 수 없는 리뷰어예요."));
+        createWith("key-0103-aaaa", "\"reviewers\":[\"outsider\"]").andExpect(status().isCreated())
+                .andExpect(jsonPath("$.number").value(9)).andExpect(jsonPath("$.reviewers.length()").value(0))
+                .andExpect(jsonPath("$.warning").value(org.hamcrest.Matchers.containsString("리뷰어를 지정하지 못했어요")));
+        list("").andExpect(jsonPath("$.items.length()").value(1));
+    }
+
+    @Test
+    void reviewerCandidatesComeFromGithubWithoutMeOrBots() throws Exception {
+        when(pulls.reviewerCandidates(anyString(), eq("team"), eq("server"))).thenReturn(new GitHubPullRequests.Candidates(List.of(
+                new GitHubPullRequests.User(ownerGithubId, "me", "User", null), new GitHubPullRequests.User(5, "dev-a", "User", "https://avatars/a"),
+                new GitHubPullRequests.User(6, "ci-bot", "Bot", null)), false));
+        mvc.perform(get(base("/repositories/" + repositoryDbId + "/reviewer-candidates")).with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.users.length()").value(1)).andExpect(jsonPath("$.users[0].login").value("dev-a"))
+                .andExpect(jsonPath("$.users[0].avatarUrl").value("https://avatars/a")).andExpect(jsonPath("$.hasMore").value(false));
+        var outsider = login.login(new GitHubProfile(IDS.incrementAndGet(), "candidate-outsider", null, null, null));
+        mvc.perform(get(base("/repositories/" + repositoryDbId + "/reviewer-candidates")).with(as(outsider))).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void teamSummaryCanBeEditedWithTheCurrentVersionOnly() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        var item = list("").andReturn().getResponse().getContentAsString();
+        String id = JsonPath.read(item, "$.items[0].id");
+        int version = JsonPath.read(item, "$.items[0].version");
+        editSummary(owner, id, "{\"teamSummary\":\"  고친 요약  \",\"version\":" + version + "}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.teamSummary").value("고친 요약")).andExpect(jsonPath("$.body").value("본문"))
+                .andExpect(jsonPath("$.version").value(version + 1));
+        editSummary(owner, id, "{\"teamSummary\":\"늦은 수정\",\"version\":" + version + "}").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("PULL_REQUEST_CONFLICT"));
+        editSummary(owner, id, "{\"teamSummary\":\"\",\"version\":" + (version + 1) + "}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.teamSummary").doesNotExist());
+        editSummary(owner, id, "{\"teamSummary\":\"x\"}").andExpect(status().isBadRequest());
+
+        // 다시 수집해도 고친 요약은 GitHub 값으로 덮이지 않는다.
+        editSummary(owner, id, "{\"teamSummary\":\"남는 요약\",\"version\":" + (version + 2) + "}").andExpect(status().isOk());
+        stubFetch(withUpdatedAt(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING), "2026-10-31T09:00:00Z"));
+        sync().andExpect(status().isOk());
+        list("").andExpect(jsonPath("$.items[0].teamSummary").value("남는 요약"));
+    }
+
+    @Test
+    void viewersAndOutsidersCannotEditTheTeamSummary() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        String id = JsonPath.read(list("").andReturn().getResponse().getContentAsString(), "$.items[0].id");
+        var viewer = login.login(new GitHubProfile(IDS.incrementAndGet(), "summary-viewer", null, null, null));
+        members.saveAndFlush(ProjectMember.builder().project(projects.findById(projectId).orElseThrow())
+                .user(users.findById(viewer.userId()).orElseThrow()).role(ProjectMember.Role.VIEWER).build());
+        editSummary(viewer, id, "{\"teamSummary\":\"x\",\"version\":0}").andExpect(status().isForbidden());
+        var outsider = login.login(new GitHubProfile(IDS.incrementAndGet(), "summary-outsider", null, null, null));
+        editSummary(outsider, id, "{\"teamSummary\":\"x\",\"version\":0}").andExpect(status().isNotFound());
+        mvc.perform(patch(base("/pull-requests/" + id)).with(as(owner)).contentType("application/json")
+                .content("{\"teamSummary\":\"x\",\"version\":0}")).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void reviewersWhoAlreadyReviewedStayListedButLeaveMyReviewQueue() throws Exception {
+        long otherId = IDS.incrementAndGet();
+        var me = new GitHubPullRequests.User(ownerGithubId, "remote-" + ownerGithubId, "User", null);
+        var requested = withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.PENDING), ownerGithubId, otherId + 1);
+        stubFetch(requested);
+        sync().andExpect(status().isOk());
+        list("").andExpect(jsonPath("$.items[0].reviewers.length()").value(2));
+
+        // 내가 리뷰를 제출하면 GitHub는 요청 목록에서 나를 빼지만, 맡긴 리뷰어로는 남는다.
+        var reviewed = withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.APPROVED), otherId + 1);
+        stubFetch(new GitHubPullRequests.Fetched(reviewed.pull(), reviewed.reviewDecision(), List.of(me)));
+        sync().andExpect(status().isOk());
+        list("").andExpect(jsonPath("$.items[0].reviewers.length()").value(2));
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(0));
+
+        // 요청이 취소되고 리뷰도 안 한 사람은 빠진다.
+        stubFetch(new GitHubPullRequests.Fetched(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.APPROVED).pull(),
+                PullRequest.ReviewDecision.APPROVED, List.of(me)));
+        sync().andExpect(status().isOk());
+        list("").andExpect(jsonPath("$.items[0].reviewers.length()").value(1))
+                .andExpect(jsonPath("$.items[0].reviewers[0].login").value("remote-" + ownerGithubId));
     }
 
     @Test
@@ -184,6 +292,54 @@ class PullRequestApiTests {
     }
 
     @Test
+    void reviewerMeListsOnlyOpenReadyPullRequestsWhereIAmRequested() throws Exception {
+        long otherId = IDS.incrementAndGet();
+        stubFetch(withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.PENDING), ownerGithubId),
+                withReviewers(fetched(2, 2, otherId, "open", false, null, PullRequest.ReviewDecision.PENDING), otherId + 1),
+                withReviewers(fetched(3, 3, otherId, "open", true, null, PullRequest.ReviewDecision.PENDING), ownerGithubId),
+                withReviewers(fetched(4, 4, otherId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.UNKNOWN), ownerGithubId));
+        sync().andExpect(status().isOk());
+
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].number").value(1))
+                .andExpect(jsonPath("$.counts.open").value(1));
+        list("?reviewer=me").andExpect(jsonPath("$.items.length()").value(1));
+        list("?state=open").andExpect(jsonPath("$.items.length()").value(3));
+    }
+
+    @Test
+    void reviewRequestsFollowGithubWhenTheRequestIsRemovedOrMadeAgain() throws Exception {
+        long otherId = IDS.incrementAndGet();
+        var requested = withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.PENDING), ownerGithubId);
+        stubFetch(requested);
+        sync().andExpect(status().isOk());
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(1));
+
+        stubFetch(withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.APPROVED), otherId + 1));
+        sync().andExpect(status().isOk());
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(0)).andExpect(jsonPath("$.counts.open").value(0));
+
+        stubFetch(requested);
+        sync().andExpect(status().isOk());
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(1));
+        // 같은 요청을 다시 수집해도 중복되지 않는다.
+        sync().andExpect(status().isOk());
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(1));
+    }
+
+    @Test
+    void reviewerFilterIsPerUserAndRejectsBadOrConflictingValues() throws Exception {
+        long otherId = IDS.incrementAndGet();
+        stubFetch(withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.PENDING), ownerGithubId));
+        sync().andExpect(status().isOk());
+        var viewer = login.login(new GitHubProfile(IDS.incrementAndGet(), "pr-reviewer-viewer", null, null, null));
+        members.saveAndFlush(ProjectMember.builder().project(projects.findById(projectId).orElseThrow())
+                .user(users.findById(viewer.userId()).orElseThrow()).role(ProjectMember.Role.VIEWER).build());
+        mvc.perform(get(base("/pull-requests") + "?reviewer=me").with(as(viewer))).andExpect(jsonPath("$.items.length()").value(0));
+        list("?reviewer=someone").andExpect(status().isBadRequest());
+        list("?reviewer=me&author=me").andExpect(status().isBadRequest());
+    }
+
+    @Test
     void syncingAgainUpdatesInPlaceWithoutDuplicatesAndKeepsTeamSummary() throws Exception {
         stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
         sync().andExpect(status().isOk());
@@ -195,6 +351,26 @@ class PullRequestApiTests {
         sync().andExpect(status().isOk());
         list("").andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].state").value("MERGED"))
                 .andExpect(jsonPath("$.items[0].teamSummary").value("팀 요약"));
+    }
+
+    @Test
+    void mergingKeepsTheLastReviewDecisionAndPullRequestsFirstSeenClosedStayUnknown() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.APPROVED),
+                fetched(3, 3, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.APPROVED));
+        sync().andExpect(status().isOk());
+        stubFetch(withUpdatedAt(fetched(1, 1, ownerGithubId, "closed", false, null, PullRequest.ReviewDecision.UNKNOWN), "2026-10-31T01:00:00Z"),
+                withUpdatedAt(fetched(3, 3, ownerGithubId, "closed", false, Instant.parse("2026-10-31T01:00:00Z"), PullRequest.ReviewDecision.UNKNOWN), "2026-10-31T01:00:00Z"),
+                fetched(2, 2, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.UNKNOWN));
+        sync().andExpect(status().isOk());
+        list("?state=merged").andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[?(@.number == 3)].reviewDecision").value("APPROVED"))
+                .andExpect(jsonPath("$.items[?(@.number == 2)].reviewDecision").value("UNKNOWN"));
+        list("?state=closed").andExpect(jsonPath("$.items[0].reviewDecision").value("APPROVED"));
+
+        // 병합 없이 닫힌 PR이 다시 열리면 GitHub 리뷰로 새로 계산한다.
+        stubFetch(withUpdatedAt(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.CHANGES_REQUESTED), "2026-10-31T02:00:00Z"));
+        sync().andExpect(status().isOk());
+        list("?state=open").andExpect(jsonPath("$.items[0].reviewDecision").value("CHANGES_REQUESTED"));
     }
 
     @Test
@@ -282,6 +458,14 @@ class PullRequestApiTests {
         return new GitHubPullRequests.Fetched(remote, decision);
     }
 
+    private GitHubPullRequests.Fetched withReviewers(GitHubPullRequests.Fetched item, long... githubIds) {
+        var r = item.pull();
+        var reviewers = java.util.Arrays.stream(githubIds).mapToObj(id -> new GitHubPullRequests.User(id, "remote-" + id, "User", null)).toList();
+        return new GitHubPullRequests.Fetched(new GitHubPullRequests.Remote(r.id(), r.number(), r.htmlUrl(), r.title(), r.body(), r.state(),
+                r.draft(), r.user(), r.head(), r.base(), r.mergeCommitSha(), r.createdAt(), r.updatedAt(), r.closedAt(), r.mergedAt(), reviewers),
+                item.reviewDecision());
+    }
+
     private GitHubPullRequests.Fetched withUpdatedAt(GitHubPullRequests.Fetched item, String updatedAt) {
         var r = item.pull();
         return new GitHubPullRequests.Fetched(new GitHubPullRequests.Remote(r.id(), r.number(), r.htmlUrl(), r.title(), r.body(), r.state(),
@@ -302,6 +486,22 @@ class PullRequestApiTests {
         return mvc.perform(post(base("/pull-requests")).with(as(principal)).with(csrf()).contentType("application/json")
                 .content("{\"repositoryId\":\"" + repositoryDbId + "\",\"title\":\"새 PR\",\"headBranch\":\"" + head + "\",\"baseBranch\":\"" + base
                         + "\",\"teamSummary\":\"팀 요약\",\"draft\":" + draft + ",\"requestKey\":\"" + key + "\"}"));
+    }
+
+    private ResultActions createWith(String key, String extraFields) throws Exception {
+        return mvc.perform(post(base("/pull-requests")).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"repositoryId\":\"" + repositoryDbId + "\",\"title\":\"새 PR\",\"headBranch\":\"feat/new\",\"baseBranch\":\"main\""
+                        + ",\"teamSummary\":\"팀 요약\",\"draft\":false,\"requestKey\":\"" + key + "\"," + extraFields + "}"));
+    }
+
+    private ResultActions editSummary(ZelloPrincipal principal, String id, String json) throws Exception {
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(base("/pull-requests/" + id))
+                .with(as(principal)).with(csrf()).contentType("application/json").content(json));
+    }
+
+    private GitHubPullRequests.Remote withRequested(GitHubPullRequests.Remote r, GitHubPullRequests.User... reviewers) {
+        return new GitHubPullRequests.Remote(r.id(), r.number(), r.htmlUrl(), r.title(), r.body(), r.state(), r.draft(), r.user(), r.head(),
+                r.base(), r.mergeCommitSha(), r.createdAt(), r.updatedAt(), r.closedAt(), r.mergedAt(), List.of(reviewers));
     }
 
     private ResultActions sync() throws Exception {
