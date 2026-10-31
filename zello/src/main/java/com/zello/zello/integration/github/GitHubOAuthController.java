@@ -1,6 +1,7 @@
 package com.zello.zello.integration.github;
 
 import com.zello.zello.auth.ZelloPrincipal;
+import com.zello.zello.auth.AuthProperties;
 import com.zello.zello.domain.user.UserRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
@@ -16,10 +17,20 @@ public class GitHubOAuthController {
     private final GitHubOAuthRepositories github;
     private final GitHubTokenProvider tokens;
     private final UserRepository users;
+    private final AuthProperties properties;
 
-    public GitHubOAuthController(GitHubOAuthRepositories github, GitHubTokenProvider tokens, UserRepository users) {
-        this.github = github; this.tokens = tokens; this.users = users;
+    public GitHubOAuthController(GitHubOAuthRepositories github, GitHubTokenProvider tokens, UserRepository users, AuthProperties properties) {
+        this.github = github; this.tokens = tokens; this.users = users; this.properties = properties;
     }
+
+    @GetMapping("/authorization")
+    ResponseEntity<Authorization> authorization() {
+        var config = properties.github();
+        String url = config.enabled() && config.appType() == AuthProperties.AppType.OAUTH
+                ? "https://github.com/settings/connections/applications/" + config.clientId() : null;
+        return ok(new Authorization(url));
+    }
+    public record Authorization(String organizationAccessUrl) { }
 
     @GetMapping("/accounts")
     ResponseEntity<GitHubGateway.Page<Account>> accounts(Authentication authentication, HttpServletRequest request,
