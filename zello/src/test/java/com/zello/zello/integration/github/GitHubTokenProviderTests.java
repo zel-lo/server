@@ -5,6 +5,8 @@ import com.zello.zello.auth.AuthProperties;
 import com.zello.zello.auth.ZelloPrincipal;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
@@ -12,12 +14,15 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.web.HttpSessionOAuth2AuthorizedClientRepository;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.OAuth2AccessToken;
+import org.springframework.security.oauth2.core.endpoint.DefaultMapOAuth2AccessTokenResponseConverter;
 
 import static org.assertj.core.api.Assertions.*;
 
 class GitHubTokenProviderTests {
-    @Test
-    void oauthRequiresTheCurrentClientAndRepositoryScopesInsteadOfReusingTheOldGithubAppSession() {
+    @ParameterizedTest
+    @ValueSource(strings = {"read:org,read:user,repo", "repo read:org read:user", "repo, read:org, read:user",
+            "repo,write:org", "repo,admin:org"})
+    void oauthRequiresTheCurrentClientAndRepositoryScopesInsteadOfReusingTheOldGithubAppSession(String grantedScopes) {
         var clients = new HttpSessionOAuth2AuthorizedClientRepository();
         var properties = new AuthProperties("http://127.0.0.1:5173", new AuthProperties.GitHub(true, "oauth-client", "test-secret",
                 "http://127.0.0.1:8080/login/oauth2/code/github", AuthProperties.AppType.OAUTH));
@@ -33,12 +38,22 @@ class GitHubTokenProviderTests {
         clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), missingScopes), authentication, request, new org.springframework.mock.web.MockHttpServletResponse());
         assertThatThrownBy(() -> provider.oauthToken(authentication, request)).isInstanceOfSatisfying(ApiException.class,
                 error -> assertThat(error.code()).isEqualTo("GITHUB_REAUTH_REQUIRED"));
-        var valid = new OAuth2AccessToken(OAuth2AccessToken.TokenType.BEARER, "valid-oauth", Instant.now(), Instant.now().plusSeconds(3600), java.util.Set.of("repo", "read:org", "read:user"));
+        var converter = new DefaultMapOAuth2AccessTokenResponseConverter();
+        var valid = converter.convert(java.util.Map.of("access_token", "valid-oauth", "token_type", "bearer",
+                "expires_in", 3600, "scope", grantedScopes)).getAccessToken();
         clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), valid), authentication, request, new org.springframework.mock.web.MockHttpServletResponse());
         assertThat(provider.oauthToken(authentication, request)).isEqualTo("valid-oauth");
         var changedClient = new GitHubTokenProvider(clients, new AuthProperties("http://127.0.0.1:5173", new AuthProperties.GitHub(true, "another-client", "test-secret",
                 "http://127.0.0.1:8080/login/oauth2/code/github", AuthProperties.AppType.OAUTH)));
         assertThatThrownBy(() -> changedClient.oauthToken(authentication, request)).isInstanceOf(ApiException.class);
+        for (String insufficientScopes : java.util.List.of("repo:status,read:org", "repo,read:org:other", "repo", "read:org")) {
+            var limited = converter.convert(java.util.Map.of("access_token", "limited-oauth", "token_type", "bearer",
+                    "expires_in", 3600, "scope", insufficientScopes)).getAccessToken();
+            clients.saveAuthorizedClient(new OAuth2AuthorizedClient(registration, authentication.getName(), limited), authentication, request,
+                    new org.springframework.mock.web.MockHttpServletResponse());
+            assertThatThrownBy(() -> provider.oauthToken(authentication, request)).isInstanceOfSatisfying(ApiException.class,
+                    error -> assertThat(error.code()).isEqualTo("GITHUB_REAUTH_REQUIRED"));
+        }
     }
 
     @Test

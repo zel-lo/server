@@ -4,6 +4,8 @@ import com.zello.zello.api.ApiException;
 import com.zello.zello.auth.AuthProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizedClientRepository;
@@ -35,7 +37,11 @@ public class GitHubTokenProvider {
         }
         String token = token(authentication, request);
         OAuth2AuthorizedClient client = clients.loadAuthorizedClient("github", authentication, request);
-        var scopes = client.getAccessToken().getScopes();
+        // GitHub returns comma-delimited scopes; Spring's default converter splits only on spaces.
+        // Normalize here so already persisted authorized clients also remain usable.
+        var scopes = client.getAccessToken().getScopes().stream()
+                .flatMap(scope -> Arrays.stream(scope.split("[,\\s]+")))
+                .collect(Collectors.toSet());
         boolean organizationAccess = scopes.contains("read:org") || scopes.contains("write:org") || scopes.contains("admin:org");
         if (!scopes.contains("repo") || !organizationAccess) {
             throw new ApiException(401, "GITHUB_REAUTH_REQUIRED", "저장소와 조직 접근 권한을 확인하려면 GitHub에 다시 로그인해 주세요.");
