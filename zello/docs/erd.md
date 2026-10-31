@@ -296,6 +296,8 @@ erDiagram
 
 ### 5.6 `issues` — 실제 작업과 회의 맥락
 
+2026-10-31: V4는 `archived_at`(보관·복원)과 `creation_hash`(생성 요청 내용의 SHA-256)를 추가한다. 실제 이슈 API와 발행·동기화 정책은 [ISSUES.md](../ISSUES.md)를 따른다.
+
 - `id` PK, `issue_key` VARCHAR(32) UNIQUE. 예: `ZELLO-42`; 내부 ID 기반 표시 코드이며 서비스 내 프로젝트 이름과 별개다.
 - `repository_id` FK → repositories, `author_account_id` FK → github_accounts?, `assignee_account_id` FK → github_accounts?.
 - `created_by_user_id` FK → users?. GitHub에서 수집한 이슈는 NULL일 수 있다.

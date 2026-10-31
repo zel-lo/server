@@ -242,6 +242,8 @@ CREATE TABLE webhook_deliveries (
 CREATE TABLE issues (
     id BIGINT NOT NULL AUTO_INCREMENT,
     issue_key VARCHAR(32) NOT NULL,
+    archived_at DATETIME(6) NULL,
+    creation_hash VARCHAR(64) NULL,
     repository_id BIGINT NOT NULL,
     author_account_id BIGINT NULL,
     assignee_account_id BIGINT NULL,

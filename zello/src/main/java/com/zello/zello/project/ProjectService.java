@@ -56,7 +56,7 @@ public class ProjectService {
         var project = requireMember(projectId, userId, false);
         var member = members.findByIdAndLeftAtIsNull(new ProjectMemberId(projectId, userId)).orElseThrow(ProjectService::notFound);
         if (!project.getOwnerUserId().equals(userId) && member.getRole() == ProjectMember.Role.VIEWER) {
-            throw new ApiException(403, "PROJECT_WRITE_REQUIRED", "조회 전용 멤버는 PR을 만들 수 없습니다.");
+            throw new ApiException(403, "PROJECT_WRITE_REQUIRED", "조회 전용 멤버는 작업을 변경할 수 없습니다.");
         }
         return project;
     }

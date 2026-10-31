@@ -147,6 +147,19 @@ public class RepositorySyncRun extends IdentityEntity {
         this.status = Status.SUCCEEDED;
     }
 
+    public void progress(int page,long count,boolean hasMore,LocalDateTime now) {
+        if(status!=Status.RUNNING) throw new IllegalStateException("Sync is not running");
+        this.itemsProcessed += count;
+        this.heartbeatAt = now;
+        this.checkpoint = Map.of("lastCompletedPage",page,"nextPage",page+1,"hasMore",hasMore);
+    }
+    public void fail(LocalDateTime now,String message) {
+        if(status!=Status.RUNNING) return;
+        this.status = Status.FAILED;
+        this.finishedAt = now;
+        this.lastError = message;
+    }
+
     public enum RunKind {
         INITIAL, PERIODIC, MANUAL
     }

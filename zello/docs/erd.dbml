@@ -232,6 +232,8 @@ Table "webhook_deliveries" {
 Table "issues" {
   "id" BIGINT [pk, not null, increment]
   "issue_key" VARCHAR(32) [not null]
+  "archived_at" DATETIME(6)
+  "creation_hash" VARCHAR(64)
   "repository_id" BIGINT [not null]
   "author_account_id" BIGINT
   "assignee_account_id" BIGINT

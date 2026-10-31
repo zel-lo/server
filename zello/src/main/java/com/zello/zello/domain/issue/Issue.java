@@ -188,6 +188,15 @@ public class Issue extends VersionedEntity {
         this.lastFetchedAt = lastFetchedAt;
     }
 
+    @Column(name = "archived_at", columnDefinition = "datetime(6)")
+    private LocalDateTime archivedAt;
+
+    @Column(name = "creation_hash", length = 64)
+    private String creationHash;
+    public void assignDisplayKey() { this.issueKey = "ZELLO-" + EntitySupport.required(getId(), "persisted issue.id"); }
+    public void creationHash(String hash) { this.creationHash = hash; }
+    public void preparePublish(String key) { this.publishRequestKey = key; claim(EntitySupport.now()); }
+
     public void updateDetails(String title, String description, String acceptanceCriteria) {
         this.title = EntitySupport.text(title, "title");
         this.description = description;
@@ -197,6 +206,43 @@ public class Issue extends VersionedEntity {
     public void assignTo(GitHubAccount assigneeAccount) {
         this.assigneeAccount = assigneeAccount;
         this.assigneeAccountId = assigneeAccount == null ? null : EntitySupport.required(assigneeAccount.getId(), "persisted assigneeAccount");
+    }
+
+    public void plan(WorkStatus status, Priority priority, SourceType source, LocalDate date, String context, String criteria) {
+        this.workStatus = status;
+        this.priority = priority;
+        this.sourceType = source;
+        this.meetingDate = date;
+        this.meetingContext = context;
+        this.acceptanceCriteria = criteria;
+    }
+
+    public void claim(LocalDateTime now) { this.publishStatus = PublishStatus.PENDING; this.lastFetchedAt = now; }
+    public void publicationFailed(boolean unknown, String message) {
+        if (publishStatus != PublishStatus.PUBLISHED) {
+            this.publishStatus = unknown ? PublishStatus.UNKNOWN : PublishStatus.FAILED;
+            this.lastPublishError = message;
+        }
+    }
+    public void archive(LocalDateTime now) { this.archivedAt = now; }
+    public void restore() { this.archivedAt = null; }
+    public void syncFromRemote(Long remoteId, Integer number, String url, String title, String body, GithubState state,
+                               GitHubAccount author, GitHubAccount assignee, LocalDateTime updatedAt, LocalDateTime now) {
+        this.githubIssueId = remoteId;
+        this.githubNumber = number;
+        this.githubUrl = url;
+        this.title = EntitySupport.text(title, "title");
+        this.description = body;
+        if (state == GithubState.CLOSED) this.workStatus = WorkStatus.DONE;
+        else if (this.githubState == GithubState.CLOSED && this.workStatus == WorkStatus.DONE) this.workStatus = WorkStatus.TODO;
+        this.githubState = state;
+        this.authorAccount = author;
+        this.authorAccountId = author == null ? null : author.getId();
+        assignTo(assignee);
+        this.githubUpdatedAt = updatedAt;
+        this.lastFetchedAt = now;
+        this.publishStatus = PublishStatus.PUBLISHED;
+        this.lastPublishError = null;
     }
 
     public enum WorkStatus {
