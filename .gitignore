@@ -6,3 +6,11 @@ Desktop.ini
 
 ### Logs ###
 *.log
+
+### Production runtime files ###
+deploy/production/.env
+deploy/production/.images.env
+deploy/production/.images.previous.env
+deploy/production/.images.candidate.*
+deploy/production/.deploy.lock
+deploy/production/local-secrets/

@@ -1,0 +1,39 @@
+name: Export verified image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: Full commit SHA of an image already published by CI
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Export image for initial server setup
+        env:
+          IMAGE_SHA: ${{ inputs.image_sha }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          image="ghcr.io/$REPOSITORY:sha-$IMAGE_SHA"
+          docker pull "$image"
+          docker save "$image" | gzip -1 > container-image.tar.gz
+          docker logout ghcr.io
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: container-image-${{ inputs.image_sha }}
+          path: container-image.tar.gz
+          compression-level: 0
+          retention-days: 1

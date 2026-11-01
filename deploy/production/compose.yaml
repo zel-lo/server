@@ -1,0 +1,74 @@
+name: zello
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    mem_limit: 768m
+    command: ["--innodb-buffer-pool-size=128M", "--performance-schema=OFF"]
+    environment:
+      MYSQL_DATABASE: zello
+      MYSQL_USER: zello
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Fill MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Fill MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h127.0.0.1 -u$$MYSQL_USER -Dzello -Nse 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+    logging: *logging
+
+  server:
+    image: ${SERVER_IMAGE:?Set SERVER_IMAGE in .images.env}
+    restart: unless-stopped
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/zello?serverTimezone=UTC&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false
+      DB_USERNAME: zello
+      DB_PASSWORD: ${MYSQL_PASSWORD:?Fill MYSQL_PASSWORD in .env}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?Fill SESSION_ENCRYPTION_KEY in .env}
+      SESSION_COOKIE_SECURE: "true"
+      FRONTEND_BASE_URL: https://zello.asia
+      GITHUB_LOGIN_ENABLED: "true"
+      GITHUB_APP_TYPE: OAUTH
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?Fill GITHUB_CLIENT_ID in .env}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?Fill GITHUB_CLIENT_SECRET in .env}
+      GITHUB_REDIRECT_URI: https://zello.asia/login/oauth2/code/github
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx512m -XX:MaxMetaspaceSize=192m
+    depends_on:
+      mysql:
+        condition: service_healthy
+    logging: *logging
+
+  client:
+    image: ${CLIENT_IMAGE:?Set CLIENT_IMAGE in .images.env}
+    restart: unless-stopped
+    mem_limit: 128m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      API_UPSTREAM: http://server:8080
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      server:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  mysql-data:
