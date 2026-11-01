@@ -155,6 +155,20 @@ class GitHubPullRequestsTests {
     }
 
     @Test
+    void readsReviewsOfAClosedPullRequestOnlyWhenAsked() {
+        server.expect(requestTo(BASE + "?state=all&sort=updated&direction=desc&per_page=100&page=1"))
+                .andRespond(withSuccess("[" + pull(1, 10, "closed", "\"2026-10-30T01:00:00Z\"") + "," + pull(2, 11, "closed", "null") + "]", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/10/reviews?per_page=100")).andRespond(withSuccess("""
+                [{"user":{"id":8,"login":"dev-a"},"state":"APPROVED"}]
+                """, MediaType.APPLICATION_JSON));
+        var result = github.fetch("token", "team", "server", java.util.Set.of(1L));
+        assertThat(result.get(0).reviewsFetched()).isTrue();
+        assertThat(result.get(0).reviewDecision()).isEqualTo(PullRequest.ReviewDecision.APPROVED);
+        assertThat(result.get(1).reviewsFetched()).isFalse();
+        server.verify();
+    }
+
+    @Test
     void requestsReviewersAndMapsRejectionsSafely() {
         var url = "https://api.github.com/repos/team/server/pulls/12/requested_reviewers";
         server.expect(requestTo(url)).andExpect(method(org.springframework.http.HttpMethod.POST))
@@ -167,6 +181,18 @@ class GitHubPullRequestsTests {
         assertThatThrownBy(() -> github.requestReviewers("token", "team", "server", 12, java.util.List.of("writer")))
                 .isInstanceOfSatisfying(ApiException.class, error -> {
                     assertThat(error.code()).isEqualTo("REVIEWER_REJECTED"); assertThat(error.getMessage()).doesNotContain("private detail"); });
+        server.verify();
+    }
+
+    @Test
+    void readsChangeStatsFromThePullRequestDetail() {
+        server.expect(requestTo(BASE + "/12")).andRespond(withSuccess(pull(5, 12, "open", "null")
+                .replace("\"title\"", "\"changed_files\":4,\"additions\":120,\"deletions\":30,\"commits\":3,\"title\""), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/13")).andRespond(withSuccess("{\"changed_files\":-1,\"additions\":0,\"deletions\":0,\"commits\":0}", MediaType.APPLICATION_JSON));
+        var stats = github.stats("token", "team", "server", 12);
+        assertThat(stats).isEqualTo(new GitHubPullRequests.Stats(4, 120, 30, 3));
+        assertThatThrownBy(() -> github.stats("token", "team", "server", 13)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("INVALID_GITHUB_RESPONSE"));
         server.verify();
     }
 

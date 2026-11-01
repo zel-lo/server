@@ -242,6 +242,17 @@ public class PullRequest extends VersionedEntity {
         this.lastFetchedAt = fetchedAt;
     }
 
+    /** 상세를 열 때 GitHub에서 받은 변경 규모를 기록한다. 값이 같으면 바꾸지 않아 version도 그대로다. */
+    public boolean recordStats(int changedFiles, int additions, int deletions, int commitCount) {
+        if (Objects.equals(this.changedFiles, changedFiles) && Objects.equals(this.additions, additions)
+                && Objects.equals(this.deletions, deletions) && Objects.equals(this.commitCount, commitCount)) return false;
+        this.changedFiles = changedFiles;
+        this.additions = additions;
+        this.deletions = deletions;
+        this.commitCount = commitCount;
+        return true;
+    }
+
     /** 같은 요청 키로 다시 시도할 때 발행 중 상태로 되돌린다. */
     public void claim(LocalDateTime now) {
         if (publishStatus == PublishStatus.PUBLISHED) throw new IllegalStateException("PR is already published");

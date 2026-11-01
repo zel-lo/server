@@ -340,6 +340,27 @@ class PullRequestApiTests {
     }
 
     @Test
+    void listPagesLikeTheIssueListWithTotalAndFiltersByReviewState() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING),
+                fetched(2, 2, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.CHANGES_REQUESTED),
+                fetched(3, 3, ownerGithubId, "open", true, null, PullRequest.ReviewDecision.PENDING),
+                fetched(4, 4, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.APPROVED),
+                fetched(5, 5, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.UNKNOWN));
+        sync().andExpect(status().isOk());
+
+        list("?state=all&size=2&page=1").andExpect(jsonPath("$.items.length()").value(2)).andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.hasNext").value(true)).andExpect(jsonPath("$.total").value(5));
+        list("?state=all&size=2&page=3").andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.hasNext").value(false));
+
+        // 초안은 검토 대기에서 빠진다. 탭 개수(counts)는 필터와 상관없이 전체 기준이다.
+        list("?state=open&review=pending").andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].number").value(1))
+                .andExpect(jsonPath("$.total").value(1)).andExpect(jsonPath("$.counts.open").value(4));
+        list("?state=open&review=changes_requested").andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].number").value(2));
+        list("?review=approved").andExpect(status().isBadRequest());
+    }
+
+    @Test
     void syncingAgainUpdatesInPlaceWithoutDuplicatesAndKeepsTeamSummary() throws Exception {
         stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
         sync().andExpect(status().isOk());
@@ -371,6 +392,33 @@ class PullRequestApiTests {
         stubFetch(withUpdatedAt(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.CHANGES_REQUESTED), "2026-10-31T02:00:00Z"));
         sync().andExpect(status().isOk());
         list("?state=open").andExpect(jsonPath("$.items[0].reviewDecision").value("CHANGES_REQUESTED"));
+    }
+
+    @Test
+    void approvalGivenRightBeforeMergeIsKeptEvenIfZelloNeverSawItOpen() throws Exception {
+        long otherId = IDS.incrementAndGet();
+        var me = new GitHubPullRequests.User(ownerGithubId, "remote-" + ownerGithubId, "User", null);
+        stubFetch(withReviewers(fetched(1, 1, otherId, "open", false, null, PullRequest.ReviewDecision.PENDING), ownerGithubId));
+        sync().andExpect(status().isOk());
+
+        // GitHub에서 승인 → 병합까지 한 뒤 처음 새로고침한 경우. 열려 있던 PR이라 리뷰를 한 번 더 읽는다.
+        var merged = withUpdatedAt(fetched(1, 1, otherId, "closed", false, Instant.parse("2026-10-31T01:00:00Z"), PullRequest.ReviewDecision.UNKNOWN),
+                "2026-10-31T01:00:00Z");
+        stubFetch(new GitHubPullRequests.Fetched(merged.pull(), PullRequest.ReviewDecision.APPROVED, List.of(me)));
+        sync().andExpect(status().isOk());
+        var asked = org.mockito.ArgumentCaptor.forClass(java.util.Set.class);
+        verify(pulls, atLeastOnce()).fetch(anyString(), eq("team"), eq("server"), asked.capture());
+        assertThat(asked.getValue()).containsExactly(repoId * 100 + 1);
+
+        list("?state=merged").andExpect(jsonPath("$.items[0].reviewDecision").value("APPROVED"))
+                .andExpect(jsonPath("$.items[0].reviewers[0].login").value("remote-" + ownerGithubId));
+        list("?state=open&reviewer=me").andExpect(jsonPath("$.items.length()").value(0));
+
+        // 이미 닫힌 PR로 저장된 뒤에는 다시 읽지 않는다.
+        sync().andExpect(status().isOk());
+        var askedAgain = org.mockito.ArgumentCaptor.forClass(java.util.Set.class);
+        verify(pulls, atLeastOnce()).fetch(anyString(), eq("team"), eq("server"), askedAgain.capture());
+        assertThat(askedAgain.getAllValues().getLast()).isEmpty();
     }
 
     @Test
@@ -427,6 +475,38 @@ class PullRequestApiTests {
     }
 
     @Test
+    void detailFetchesChangeStatsForOpenPullRequestsAndKeepsThemWhenGithubFails() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        String id = JsonPath.read(list("").andReturn().getResponse().getContentAsString(), "$.items[0].id");
+        list("").andExpect(jsonPath("$.items[0].changedFiles").doesNotExist());
+
+        when(pulls.stats(anyString(), eq("team"), eq("server"), eq(1))).thenReturn(new GitHubPullRequests.Stats(3, 40, 7, 2));
+        var first = mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.changedFiles").value(3)).andExpect(jsonPath("$.additions").value(40))
+                .andExpect(jsonPath("$.deletions").value(7)).andReturn();
+        int version = JsonPath.read(first.getResponse().getContentAsString(), "$.version");
+
+        // 같은 값이면 version이 오르지 않아 팀 요약 수정을 막지 않는다.
+        mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(jsonPath("$.version").value(version));
+
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenThrow(new ApiException(502, "GITHUB_UNAVAILABLE", "응답 없음"));
+        mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.changedFiles").value(3)).andExpect(jsonPath("$.body").value("본문"));
+    }
+
+    @Test
+    void closedPullRequestsFetchChangeStatsOnlyOnce() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.UNKNOWN));
+        sync().andExpect(status().isOk());
+        String id = JsonPath.read(list("").andReturn().getResponse().getContentAsString(), "$.items[0].id");
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(new GitHubPullRequests.Stats(1, 2, 3, 1));
+        mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(jsonPath("$.changedFiles").value(1));
+        mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(jsonPath("$.deletions").value(3));
+        verify(pulls, times(1)).stats(anyString(), anyString(), anyString(), anyInt());
+    }
+
+    @Test
     void detailIsHiddenFromOutsidersOtherProjectsAndUsersWhoLostGithubAccess() throws Exception {
         stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
         sync().andExpect(status().isOk());
@@ -443,7 +523,7 @@ class PullRequestApiTests {
     }
 
     private void stubFetch(GitHubPullRequests.Fetched... items) {
-        when(pulls.fetch(anyString(), eq("team"), eq("server"))).thenReturn(List.of(items));
+        when(pulls.fetch(anyString(), eq("team"), eq("server"), any())).thenReturn(List.of(items));
     }
 
     private GitHubPullRequests.Fetched fetched(long id, int number, long authorId, String state, boolean draft, Instant mergedAt,
