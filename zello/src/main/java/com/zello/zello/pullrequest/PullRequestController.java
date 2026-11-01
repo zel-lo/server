@@ -77,15 +77,73 @@ public class PullRequestController {
         // 목록과 같은 기준으로, 현재 사용자가 저장소에 접근할 수 있을 때만 본문을 보여준다.
         String token = tokens.oauthToken(authentication, request);
         var current = oauth.repository(token, pull.getRepository().getGithubRepoId());
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(view(projectId, principal.userId(), pull, token, current.owner().login(), current.name()));
+    }
+
+    /** 전체 리뷰(승인·수정 요청·코멘트)를 GitHub에 제출하고, 그 PR만 다시 읽어 리뷰 상태를 맞춘다. */
+    @PostMapping("/{pullRequestId}/reviews")
+    ResponseEntity<PullRequestService.PullRequestView> review(@PathVariable long projectId, @PathVariable long pullRequestId,
+            @Valid @RequestBody SubmitReview input, @AuthenticationPrincipal ZelloPrincipal principal,
+            Authentication authentication, HttpServletRequest request) {
+        if (!List.of("APPROVE", "REQUEST_CHANGES", "COMMENT").contains(input.event())) {
+            throw new ApiException(400, "INVALID_REVIEW_EVENT", "리뷰 종류를 확인해 주세요.");
+        }
+        var body = input.body() == null || input.body().isBlank() ? null : input.body().strip();
+        if (body == null && !"APPROVE".equals(input.event())) throw new ApiException(400, "REVIEW_BODY_REQUIRED", "수정 요청과 코멘트는 의견을 적어 주세요.");
+        var pull = service.find(projectId, principal.userId(), pullRequestId);
+        service.requireReviewer(projectId, principal.userId(), pull);
+        String token = tokens.oauthToken(authentication, request);
+        var current = oauth.repository(token, pull.getRepository().getGithubRepoId());
+        var owner = current.owner().login();
+        pulls.submitReview(token, owner, current.name(), pull.getGithubNumber(), input.event(), body);
+        refresh(projectId, principal.userId(), pull, token, owner, current.name());
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(view(projectId, principal.userId(), service.find(projectId, principal.userId(), pullRequestId), token, owner, current.name()));
+    }
+
+    /** 충돌 없이 병합할 수 있는(clean) PR만 merge commit으로 병합한다. 버튼과 별개로 서버에서도 GitHub 상태를 다시 확인한다. */
+    @PostMapping("/{pullRequestId}/merge")
+    ResponseEntity<PullRequestService.PullRequestView> merge(@PathVariable long projectId, @PathVariable long pullRequestId,
+            @Valid @RequestBody MergePullRequest input, @AuthenticationPrincipal ZelloPrincipal principal,
+            Authentication authentication, HttpServletRequest request) {
+        var pull = service.find(projectId, principal.userId(), pullRequestId);
+        service.requireMergeable(projectId, principal.userId(), pull);
+        String token = tokens.oauthToken(authentication, request);
+        var current = oauth.repository(token, pull.getRepository().getGithubRepoId());
+        var owner = current.owner().login();
+        var stats = pulls.stats(token, owner, current.name(), pull.getGithubNumber());
+        if (!input.sha().equals(stats.headSha())) throw GitHubPullRequests.headChanged();
+        if (!"clean".equals(stats.mergeableState())) throw GitHubPullRequests.notMergeable();
+        var mergeCommitSha = pulls.merge(token, owner, current.name(), pull.getGithubNumber(), input.sha());
+        refresh(projectId, principal.userId(), pull, token, owner, current.name());
+        // 다시 읽지 못했거나 GitHub 응답이 아직 열린 상태여도, 병합 API가 성공했으니 병합됨으로 기록한다.
+        service.markMerged(pull.getId(), mergeCommitSha);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(view(projectId, principal.userId(), service.find(projectId, principal.userId(), pullRequestId), token, owner, current.name()));
+    }
+
+    /** 변경 규모와 병합 상태를 GitHub에서 받아 상세를 만든다. 못 받아도 저장해 둔 값으로 보여주고 병합은 막는다. */
+    private PullRequestService.PullRequestView view(long projectId, long userId, PullRequest pull, String token, String owner, String name) {
+        GitHubPullRequests.Stats stats = null;
         if (service.needsStats(pull)) {
             try {
-                service.recordStats(pull.getId(), pulls.stats(token, current.owner().login(), current.name(), pull.getGithubNumber()));
-                pull = service.find(projectId, principal.userId(), pullRequestId);
+                stats = pulls.stats(token, owner, name, pull.getGithubNumber());
+                service.recordStats(pull.getId(), stats);
+                pull = service.find(projectId, userId, pull.getId());
             } catch (ApiException exception) {
-                // 변경 규모를 못 받아도 상세는 보여주고, 저장해 둔 값이 있으면 그 값을 쓴다.
+                // 저장해 둔 변경 규모로 보여준다.
             }
         }
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.detail(pull));
+        return service.detail(pull, userId, stats);
+    }
+
+    /** GitHub 작업은 이미 끝났으니, 다시 읽기에 실패해도 오류로 돌려주지 않고 다음 새로고침에 맡긴다. */
+    private void refresh(long projectId, long userId, PullRequest pull, String token, String owner, String name) {
+        try {
+            service.refresh(projectId, userId, pull.getRepository().getId(), pulls.pull(token, owner, name, pull.getGithubNumber()));
+        } catch (ApiException ignored) {
+        }
     }
 
     /** 먼저 로컬에 기록하고 GitHub에 만든 뒤 결과를 반영한다. 같은 requestKey로 다시 보내면 중복 생성하지 않는다. */
@@ -210,4 +268,8 @@ public class PullRequestController {
                                     @Size(max = 15) List<@NotBlank @Pattern(regexp = "[A-Za-z0-9-]{1,39}") String> reviewers) { }
 
     public record UpdatePullRequest(@Size(max = 10000) String teamSummary, @NotNull Long version) { }
+
+    public record SubmitReview(@NotBlank String event, @Size(max = 60000) String body) { }
+
+    public record MergePullRequest(@NotBlank @Pattern(regexp = "[0-9a-f]{40}") String sha) { }
 }

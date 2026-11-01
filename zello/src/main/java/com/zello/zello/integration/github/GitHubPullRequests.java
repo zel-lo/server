@@ -150,6 +150,70 @@ public class GitHubPullRequests {
         return stats;
     }
 
+    /** PR 하나를 리뷰까지 다시 읽는다. zello에서 리뷰를 제출하거나 병합한 직후 상태를 맞출 때 쓴다. */
+    public Fetched pull(String token, String owner, String repository, int number) {
+        requireName(owner, repository);
+        var remote = get(token, Remote.class, "/repos/{owner}/{repo}/pulls/{number}", owner, repository, number).getBody();
+        validate(remote);
+        return reviews(token, owner, repository, remote);
+    }
+
+    /** 전체 리뷰를 제출한다. event는 APPROVE, REQUEST_CHANGES, COMMENT 중 하나. */
+    public void submitReview(String token, String owner, String repository, int number, String event, String body) {
+        requireName(owner, repository);
+        var request = new HashMap<String, Object>();
+        request.put("event", event);
+        if (body != null) request.put("body", body);
+        try {
+            client.post().uri("/repos/{owner}/{repo}/pulls/{number}/reviews", owner, repository, number)
+                    .headers(headers -> headers.setBearerAuth(token)).body(request).retrieve().toBodilessEntity();
+        } catch (RestClientResponseException exception) {
+            int status = exception.getStatusCode().value();
+            if (status == 401) throw new ApiException(401, "GITHUB_REAUTH_REQUIRED", "GitHub에 다시 로그인해 주세요.");
+            if (status == 422) throw new ApiException(422, "REVIEW_REJECTED", "GitHub가 리뷰를 거부했어요. 본인 PR은 승인하거나 수정 요청할 수 없어요.");
+            if (status == 403 || status == 404) throw new ApiException(403, "GITHUB_ACCESS_RESTRICTED", "이 PR에 리뷰를 남길 권한이 없어요.");
+            throw new ApiException(502, "GITHUB_UNAVAILABLE", "GitHub 응답을 받지 못했습니다. GitHub에서 리뷰가 등록됐는지 확인해 주세요.");
+        } catch (RestClientException exception) {
+            throw new ApiException(502, "GITHUB_UNAVAILABLE", "GitHub에 연결하지 못했습니다. GitHub에서 리뷰가 등록됐는지 확인해 주세요.");
+        }
+    }
+
+    /** merge commit으로 병합한다. sha는 사용자가 확인한 head로, 그 사이 새 커밋이 올라왔으면 GitHub가 거절한다. */
+    public String merge(String token, String owner, String repository, int number, String sha) {
+        requireName(owner, repository);
+        try {
+            var result = client.put().uri("/repos/{owner}/{repo}/pulls/{number}/merge", owner, repository, number)
+                    .headers(headers -> headers.setBearerAuth(token)).body(Map.of("merge_method", "merge", "sha", sha))
+                    .retrieve().body(MergeResult.class);
+            if (result == null || !result.merged()) throw notMergeable();
+            return result.sha();
+        } catch (RestClientResponseException exception) {
+            int status = exception.getStatusCode().value();
+            if (status == 401) throw new ApiException(401, "GITHUB_REAUTH_REQUIRED", "GitHub에 다시 로그인해 주세요.");
+            if (status == 409) throw headChanged();
+            if (status == 405 && exception.getResponseBodyAsString().contains("not allowed")) {
+                throw new ApiException(409, "MERGE_METHOD_NOT_ALLOWED", "저장소 설정에서 merge commit이 허용되지 않아요. GitHub에서 병합해 주세요.");
+            }
+            if (status == 405 || status == 422) throw notMergeable();
+            if (status == 403 || status == 404) throw new ApiException(403, "GITHUB_ACCESS_RESTRICTED", "이 저장소에 병합할 권한이 없어요.");
+            throw mergeUnknown();
+        } catch (RestClientException exception) {
+            throw mergeUnknown();
+        }
+    }
+
+    public static ApiException notMergeable() {
+        return new ApiException(409, "PULL_REQUEST_NOT_MERGEABLE", "지금은 병합할 수 없어요. GitHub PR 페이지에서 확인해 주세요.");
+    }
+
+    public static ApiException headChanged() {
+        return new ApiException(409, "PULL_REQUEST_HEAD_CHANGED", "PR에 새 커밋이 올라왔어요. 다시 확인한 뒤 병합해 주세요.");
+    }
+
+    private ApiException mergeUnknown() {
+        return new ApiException(503, "GITHUB_RESULT_UNKNOWN", "병합됐는지 확인하지 못했어요. 잠시 후 새로고침해 주세요.");
+    }
+
     /** 리뷰어로 지정할 수 있는 사람. 저장소의 assignees 목록을 쓴다. */
     public Candidates reviewerCandidates(String token, String owner, String repository) {
         requireName(owner, repository);
@@ -235,8 +299,17 @@ public class GitHubPullRequests {
 
     public record Candidates(List<User> users, boolean hasMore) { }
 
+    /** mergeableState는 GitHub의 mergeable_state(clean, dirty, blocked, behind, unstable, draft, unknown 등). */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Stats(@JsonProperty("changed_files") int changedFiles, int additions, int deletions, int commits) { }
+    public record Stats(@JsonProperty("changed_files") int changedFiles, int additions, int deletions, int commits,
+                        @JsonProperty("mergeable_state") String mergeableState, Ref head) {
+        public Stats(int changedFiles, int additions, int deletions, int commits) { this(changedFiles, additions, deletions, commits, null, null); }
+
+        public String headSha() { return head == null ? null : head.sha(); }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record MergeResult(String sha, boolean merged) { }
 
     public record NewPull(String title, String body, String head, String base, boolean draft) { }
 
