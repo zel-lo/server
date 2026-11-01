@@ -496,6 +496,94 @@ class PullRequestApiTests {
     }
 
     @Test
+    void requestedReviewersCanSubmitAReviewThatShowsUpRightAway() throws Exception {
+        long authorId = IDS.incrementAndGet();
+        var me = new GitHubPullRequests.User(ownerGithubId, "remote-" + ownerGithubId, "User", null);
+        var open = fetched(1, 1, authorId, "open", false, null, PullRequest.ReviewDecision.PENDING);
+        stubFetch(withReviewers(open, ownerGithubId));
+        sync().andExpect(status().isOk());
+        String id = JsonPath.read(list("").andReturn().getResponse().getContentAsString(), "$.items[0].id");
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(stats("blocked", SHA));
+        detail(id).andExpect(jsonPath("$.actions.canReview").value(true)).andExpect(jsonPath("$.actions.canMerge").value(false))
+                .andExpect(jsonPath("$.actions.mergeState").value("blocked"));
+        list("").andExpect(jsonPath("$.items[0].actions").doesNotExist());
+
+        review(id, "{\"event\":\"REQUEST_CHANGES\",\"body\":\"  \"}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("REVIEW_BODY_REQUIRED"));
+        review(id, "{\"event\":\"DISMISS\"}").andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_REVIEW_EVENT"));
+        verify(pulls, never()).submitReview(anyString(), anyString(), anyString(), anyInt(), anyString(), any());
+
+        // 승인 후 GitHub에서 다시 읽으면 요청 목록에서 빠지고 리뷰한 사람으로 남는다.
+        when(pulls.pull(anyString(), eq("team"), eq("server"), eq(1)))
+                .thenReturn(new GitHubPullRequests.Fetched(withUpdatedAt(open, "2026-10-30T02:00:00Z").pull(), PullRequest.ReviewDecision.APPROVED, List.of(me)));
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(stats("clean", SHA));
+        review(id, "{\"event\":\"APPROVE\"}").andExpect(status().isOk()).andExpect(jsonPath("$.reviewDecision").value("APPROVED"))
+                .andExpect(jsonPath("$.reviewers[0].login").value(me.login())).andExpect(jsonPath("$.actions.canMerge").value(true))
+                .andExpect(jsonPath("$.actions.headSha").value(SHA));
+        verify(pulls).submitReview("session-token", "team", "server", 1, "APPROVE", null);
+        list("?reviewer=me").andExpect(jsonPath("$.items.length()").value(0));
+    }
+
+    @Test
+    void onlyWritableReviewersOfOpenReadyPullRequestsCanReview() throws Exception {
+        long authorId = IDS.incrementAndGet();
+        stubFetch(fetched(1, 1, authorId, "open", false, null, PullRequest.ReviewDecision.PENDING),
+                withReviewers(fetched(2, 2, authorId, "open", true, null, PullRequest.ReviewDecision.PENDING), ownerGithubId));
+        sync().andExpect(status().isOk());
+        String notMine = idOf(1), draft = idOf(2);
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(stats("clean", SHA));
+        detail(notMine).andExpect(jsonPath("$.actions.canReview").value(false));
+        review(notMine, "{\"event\":\"COMMENT\",\"body\":\"의견\"}").andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("REVIEWER_REQUIRED"));
+        review(draft, "{\"event\":\"COMMENT\",\"body\":\"의견\"}").andExpect(status().isConflict());
+        var viewer = login.login(new GitHubProfile(IDS.incrementAndGet(), "review-viewer", null, null, null));
+        members.saveAndFlush(ProjectMember.builder().project(projects.findById(projectId).orElseThrow())
+                .user(users.findById(viewer.userId()).orElseThrow()).role(ProjectMember.Role.VIEWER).build());
+        mvc.perform(post(base("/pull-requests/" + notMine + "/reviews")).with(as(viewer)).with(csrf()).contentType("application/json")
+                .content("{\"event\":\"APPROVE\"}")).andExpect(status().isForbidden());
+        mvc.perform(get(base("/pull-requests/" + notMine)).with(as(viewer))).andExpect(jsonPath("$.actions.canMerge").value(false));
+        verify(pulls, never()).submitReview(anyString(), anyString(), anyString(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void mergesOnlyCleanPullRequestsAtTheConfirmedHead() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.APPROVED));
+        sync().andExpect(status().isOk());
+        String id = idOf(1);
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(stats("dirty", SHA));
+        detail(id).andExpect(jsonPath("$.actions.canMerge").value(false)).andExpect(jsonPath("$.actions.mergeState").value("dirty"));
+        merge(id, SHA).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PULL_REQUEST_NOT_MERGEABLE"));
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(stats("clean", "b".repeat(40)));
+        merge(id, SHA).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PULL_REQUEST_HEAD_CHANGED"));
+        merge(id, "not-a-sha").andExpect(status().isBadRequest());
+        verify(pulls, never()).merge(anyString(), anyString(), anyString(), anyInt(), anyString());
+
+        // 병합 뒤 다시 읽기에 실패해도 병합됨으로 기록한다.
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenReturn(stats("clean", SHA));
+        when(pulls.merge(anyString(), eq("team"), eq("server"), eq(1), eq(SHA))).thenReturn("c".repeat(40));
+        when(pulls.pull(anyString(), anyString(), anyString(), anyInt())).thenThrow(new ApiException(502, "GITHUB_UNAVAILABLE", "응답 없음"));
+        merge(id, SHA).andExpect(status().isOk()).andExpect(jsonPath("$.state").value("MERGED"))
+                .andExpect(jsonPath("$.actions.canMerge").value(false)).andExpect(jsonPath("$.actions.mergeState").doesNotExist());
+        merge(id, SHA).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PULL_REQUEST_NOT_OPEN"));
+        verify(pulls, times(1)).merge(anyString(), anyString(), anyString(), anyInt(), anyString());
+    }
+
+    @Test
+    void mergeIsHiddenWhenGithubStateIsUnknownAndBlockedForViewers() throws Exception {
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        String id = idOf(1);
+        when(pulls.stats(anyString(), anyString(), anyString(), anyInt())).thenThrow(new ApiException(502, "GITHUB_UNAVAILABLE", "응답 없음"));
+        detail(id).andExpect(jsonPath("$.actions.canMerge").value(false)).andExpect(jsonPath("$.actions.mergeState").value("unknown"));
+        var viewer = login.login(new GitHubProfile(IDS.incrementAndGet(), "merge-viewer", null, null, null));
+        members.saveAndFlush(ProjectMember.builder().project(projects.findById(projectId).orElseThrow())
+                .user(users.findById(viewer.userId()).orElseThrow()).role(ProjectMember.Role.VIEWER).build());
+        mvc.perform(post(base("/pull-requests/" + id + "/merge")).with(as(viewer)).with(csrf()).contentType("application/json")
+                .content("{\"sha\":\"" + SHA + "\"}")).andExpect(status().isForbidden());
+        verify(pulls, never()).merge(anyString(), anyString(), anyString(), anyInt(), anyString());
+    }
+
+    @Test
     void closedPullRequestsFetchChangeStatsOnlyOnce() throws Exception {
         stubFetch(fetched(1, 1, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.UNKNOWN));
         sync().andExpect(status().isOk());
@@ -582,6 +670,30 @@ class PullRequestApiTests {
     private GitHubPullRequests.Remote withRequested(GitHubPullRequests.Remote r, GitHubPullRequests.User... reviewers) {
         return new GitHubPullRequests.Remote(r.id(), r.number(), r.htmlUrl(), r.title(), r.body(), r.state(), r.draft(), r.user(), r.head(),
                 r.base(), r.mergeCommitSha(), r.createdAt(), r.updatedAt(), r.closedAt(), r.mergedAt(), List.of(reviewers));
+    }
+
+    private static final String SHA = "a".repeat(40);
+
+    private GitHubPullRequests.Stats stats(String mergeState, String headSha) {
+        return new GitHubPullRequests.Stats(1, 2, 3, 1, mergeState, new GitHubPullRequests.Ref("feat/1", headSha));
+    }
+
+    private String idOf(int number) throws Exception {
+        var items = JsonPath.<List<java.util.Map<String, Object>>>read(list("").andReturn().getResponse().getContentAsString(), "$.items");
+        return items.stream().filter(item -> ((Number) item.get("number")).intValue() == number).findFirst().orElseThrow().get("id").toString();
+    }
+
+    private ResultActions detail(String id) throws Exception {
+        return mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(status().isOk());
+    }
+
+    private ResultActions review(String id, String json) throws Exception {
+        return mvc.perform(post(base("/pull-requests/" + id + "/reviews")).with(as(owner)).with(csrf()).contentType("application/json").content(json));
+    }
+
+    private ResultActions merge(String id, String sha) throws Exception {
+        return mvc.perform(post(base("/pull-requests/" + id + "/merge")).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"sha\":\"" + sha + "\"}"));
     }
 
     private ResultActions sync() throws Exception {
