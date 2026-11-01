@@ -206,6 +206,56 @@ class IssueApiTests {
         mvc.perform(get(base("/issues")+"?status=WRONG").with(as(owner))).andExpect(status().isBadRequest());
         mvc.perform(get(base("/issues")+"?size=1000").with(as(owner))).andExpect(status().isBadRequest());verifyNoInteractions(github);
     }
+
+    @Test void boardPlacementPersistsBetweenNeighborsAndRejectsStaleWrites() throws Exception {
+        var first=createId();var second=createId();var third=createId();
+        long before=version(first);
+        placement(first,before,"TODO",second).andExpect(status().isOk());
+        mvc.perform(get(base("/issues")).with(as(owner))).andExpect(jsonPath("$.items[0].id").value(third)).andExpect(jsonPath("$.items[1].id").value(first)).andExpect(jsonPath("$.items[2].id").value(second));
+        placement(first,before,"TODO",null).andExpect(status().isConflict());
+        placement(second,version(second),"IN_PROGRESS",null).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        mvc.perform(get(base("/issues")+"?status=IN_PROGRESS").with(as(owner))).andExpect(jsonPath("$.items[0].id").value(second));
+        // An anchor in a different column is rejected before any update.
+        placement(first,version(first),"TODO",second).andExpect(status().isConflict());
+        detail(first).andExpect(jsonPath("$.status").value("TODO"));
+        verifyNoInteractions(github);
+    }
+    @Test void weeklyWorkCarriesWithoutCopiesAndCompletionStaysInItsWeek() throws Exception {
+        var week=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).with(java.time.DayOfWeek.MONDAY);
+        var previous=week.minusWeeks(1);
+        var id=createId();
+        String plan=details(null).replace("\"status\":\"TODO\"","\"status\":\"TODO\",\"plannedWeekStart\":\""+previous+"\"");
+        update(id,version(id),plan,"OPEN").andExpect(status().isOk());
+        mvc.perform(get(base("/issues")+"?week="+week).with(as(owner))).andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(id)).andExpect(jsonPath("$.items[0].plannedWeekStart").value(previous.toString()));
+        mvc.perform(get(base("/issues")+"?week="+week.plusWeeks(1)).with(as(owner))).andExpect(jsonPath("$.items[0].id").value(id));
+        mvc.perform(get(base("/issues")+"?week="+week+"&assignee=unassigned&repositoryId="+repositoryId).with(as(owner))).andExpect(jsonPath("$.total").value(1));
+        mvc.perform(get(base("/issues")+"?week="+week+"&assignee=nobody").with(as(owner))).andExpect(jsonPath("$.total").value(0));
+        mvc.perform(get(base("/issues")+"?week="+week+"&repositoryId=999999999").with(as(owner))).andExpect(jsonPath("$.total").value(0));
+        assertThat(issues.findByRepositoryId(repositoryId)).hasSize(1);
+        update(id,version(id),plan.replace("\"status\":\"TODO\"","\"status\":\"DONE\""),"CLOSED").andExpect(status().isOk()).andExpect(jsonPath("$.completedAt").isNotEmpty());
+        mvc.perform(get(base("/issues")+"?week="+week).with(as(owner))).andExpect(jsonPath("$.total").value(1));
+        mvc.perform(get(base("/issues")+"?week="+week.plusWeeks(1)).with(as(owner))).andExpect(jsonPath("$.total").value(0));
+        update(id,version(id),plan,"OPEN").andExpect(status().isOk()).andExpect(jsonPath("$.completedAt").isEmpty());
+        mvc.perform(get(base("/issues")+"?week="+week.plusWeeks(1)).with(as(owner))).andExpect(jsonPath("$.total").value(1));
+        mvc.perform(get(base("/issues")+"?week="+week.plusDays(1)).with(as(owner))).andExpect(status().isBadRequest());
+        verifyNoInteractions(github);
+    }
+    @Test void boardPlacementRequiresWriterCsrfAndUnarchivedWork() throws Exception {
+        var id=createId();var viewer=member(ProjectMember.Role.VIEWER);
+        String body="{\"version\":"+version(id)+",\"details\":"+details(null)+",\"githubState\":\"OPEN\",\"placement\":{\"beforeId\":null}}";
+        mvc.perform(patch(base("/issues/"+id)).with(as(viewer)).with(csrf()).contentType("application/json").content(body)).andExpect(status().isForbidden());
+        mvc.perform(patch(base("/issues/"+id)).with(as(owner)).contentType("application/json").content(body)).andExpect(status().isForbidden());
+        mvc.perform(delete(base("/issues/"+id)+"?version="+version(id)).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        placement(id,version(id),"TODO",null).andExpect(status().isConflict());
+        verifyNoInteractions(github);
+    }
+    ResultActions placement(String id,long version,String state,String beforeId) throws Exception {
+        return mvc.perform(patch(base("/issues/"+id)).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"version\":"+version+",\"details\":"+details(null).replace("\"TODO\"","\""+state+"\"")
+                +",\"githubState\":\"OPEN\",\"placement\":{\"beforeId\":"+(beforeId==null ? "null" : "\""+beforeId+"\"")+"}}"));
+    }
+
     ResultActions update(String id,long version,String details,String state) throws Exception {
         return mvc.perform(patch(base("/issues/"+id)).with(as(owner)).with(csrf()).contentType("application/json")
                 .content("{\"version\":"+version+",\"details\":"+details+",\"githubState\":\""+state+"\"}"));

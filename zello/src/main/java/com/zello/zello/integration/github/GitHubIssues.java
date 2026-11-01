@@ -117,5 +117,11 @@ public class GitHubIssues {
     @JsonIgnoreProperties(ignoreUnknown=true)
     public record Remote(long id, int number, @JsonProperty("html_url") String htmlUrl, String title, String body, String state,
                          Person user, List<Person> assignees, @JsonProperty("updated_at") Instant updatedAt,
-                         @JsonProperty("pull_request") Map<String,Object> pullRequest,List<Label> labels) { }
+                         @JsonProperty("pull_request") Map<String,Object> pullRequest,List<Label> labels,
+                         @JsonProperty("closed_at") Instant closedAt) {
+        public Remote(long id,int number,String htmlUrl,String title,String body,String state,Person user,List<Person> assignees,
+                      Instant updatedAt,Map<String,Object> pullRequest,List<Label> labels) {
+            this(id,number,htmlUrl,title,body,state,user,assignees,updatedAt,pullRequest,labels,null);
+        }
+    }
 }
