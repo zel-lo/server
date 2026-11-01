@@ -76,6 +76,8 @@ curl --fail https://zello.asia/api/auth/status
 
 컨테이너 로그는 서비스별 10MB × 3개로 제한합니다. MySQL 데이터는 `zello_mysql-data` 볼륨에 저장합니다. 클라이언트·백엔드·DB 메모리 상한은 각각 128MB·1GB·768MB입니다.
 
+전체 Compose 구성은 `bash scripts/smoke-production-stack.sh /opt/zello`로 검증합니다. 별도 네트워크·임시 DB 볼륨·임의의 로컬 포트를 사용하며 종료 시 테스트 자원을 삭제합니다. 이 검증은 운영 DB를 생성하거나 변경하지 않습니다.
+
 ## 초기 이미지 재적재
 
 새 VM을 준비하거나 초기 이미지가 없는 경우 각 저장소의 **Export verified image** 워크플로에 이미 CI가 발행한 전체 커밋 SHA를 넣습니다. 1일간 보관되는 `container-image-<SHA>` 아티팩트를 서버로 전송하고 아래 명령으로 적재합니다.
