@@ -50,6 +50,9 @@ CREATE TABLE projects (
     id BIGINT NOT NULL AUTO_INCREMENT,
     owner_user_id BIGINT NOT NULL,
     name VARCHAR(100) NOT NULL,
+    start_date DATE NULL,
+    end_date DATE NULL,
+    creation_request_key VARCHAR(64) NULL,
     goal TEXT NULL,
     description TEXT NULL,
     timezone VARCHAR(64) NOT NULL,
@@ -61,6 +64,8 @@ CREATE TABLE projects (
     PRIMARY KEY (id),
     CONSTRAINT fk_projects_owner FOREIGN KEY (owner_user_id)
         REFERENCES users (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT uk_projects_creation_request UNIQUE (creation_request_key),
+    CONSTRAINT ck_projects_period CHECK ((start_date IS NULL AND end_date IS NULL) OR (start_date IS NOT NULL AND end_date IS NOT NULL AND end_date >= start_date)),
     CONSTRAINT ck_projects_sync_interval CHECK (sync_interval_minutes > 0),
     CONSTRAINT ck_projects_version CHECK (version >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

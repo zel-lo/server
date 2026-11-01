@@ -11,6 +11,7 @@ import com.zello.zello.domain.repository.*;
 import com.zello.zello.domain.user.UserRepository;
 import com.zello.zello.integration.github.GitHubIssues;
 import com.zello.zello.project.ProjectService;
+import com.zello.zello.project.ProjectWeeks;
 import jakarta.validation.constraints.*;
 import java.time.*;
 import java.util.*;
@@ -61,16 +62,16 @@ public class IssueService {
                 i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError(),i.getBoardOrder(),i.getPlannedWeekStart(),i.getCompletedAt());
     }
     public Page list(long projectId,long userId,List<Long> visible,boolean archived,boolean activeOnly,Issue.WorkStatus status,boolean mine,String query,int page,int size,LocalDate week,Long repositoryFilter,String assigneeFilter) {
-        projects.requireMember(projectId,userId,false);
+        var project=projects.requireMember(projectId,userId,false);
         if(visible.isEmpty()) return new Page(List.of(),page,false,0);
         Long assignee=mine ? users.findById(userId).orElseThrow(ProjectService::notFound).getGithubAccountId() : null;
-        var result=issues.search(projectId,visible,archived,activeOnly,status,assignee,query,repositoryFilter,"unassigned".equals(assigneeFilter),"unassigned".equals(assigneeFilter) ? "" : assigneeFilter,week,week==null ? null : week.atStartOfDay().minusHours(9),week==null ? null : week.plusWeeks(1).atStartOfDay().minusHours(9),PageRequest.of(page-1,size));
+        var result=issues.search(projectId,visible,archived,activeOnly,status,assignee,query,repositoryFilter,"unassigned".equals(assigneeFilter),"unassigned".equals(assigneeFilter) ? "" : assigneeFilter,week,week==null ? null : ProjectWeeks.begins(project,week),week==null ? null : ProjectWeeks.ends(project,week),PageRequest.of(page-1,size));
         return new Page(result.map(this::view).getContent(),page,result.hasNext(),result.getTotalElements());
     }
     @Transactional
     public View createLocal(long projectId,long userId,Create input) {
         lock(projectId); var repo=repository(projectId,userId,input.repositoryId(),true);
-        validatePlan(input.details());
+        validatePlan(projectId,userId,input.details());
         if(input.details().source()==Issue.SourceType.GITHUB) throw new ApiException(400,"INVALID_ISSUE_SOURCE","새 작업의 등록 경로를 선택해 주세요.");
         String hash=fingerprint(input);
         var previous=issues.findByPublishRequestKey(input.requestKey());
@@ -87,7 +88,7 @@ public class IssueService {
                 .title(d.title().strip()).description(d.description()).workStatus(d.status()).priority(d.priority())
                 .sourceType(d.source()).meetingDate(d.meetingDate()).meetingContext(d.meetingContext()).acceptanceCriteria(d.acceptanceCriteria())
                 .publishStatus(PublishStatus.LOCAL).publishRequestKey(input.requestKey()).build();
-        row.schedule(d.plannedWeekStart());row.creationHash(hash);issues.saveAndFlush(row);row.assignDisplayKey();issues.flush();
+        row.schedule(d.plannedWeekStart()==null ? ProjectWeeks.current(projectRows.findById(projectId).orElseThrow()) : d.plannedWeekStart());row.creationHash(hash);issues.saveAndFlush(row);row.assignDisplayKey();issues.flush();
         notifyAssignment(projectId,userId,row,null);
         return view(row);
     }
@@ -152,9 +153,12 @@ public class IssueService {
     public void fail(long id,boolean unknown,String message) {
         issues.findById(id).ifPresent(i -> i.publicationFailed(unknown,message));
     }
+    public Project projectSchedule(long projectId,long userId) { return projects.requireMember(projectId,userId,false); }
+    public void validatePlan(long projectId,long userId,Details d) {
+        validatePlan(d);
+        ProjectWeeks.requireWeek(projectSchedule(projectId,userId),d.plannedWeekStart());
+    }
     public void validatePlan(Details d) {
-        if(d.plannedWeekStart()!=null && d.plannedWeekStart().getDayOfWeek()!=DayOfWeek.MONDAY)
-            throw new ApiException(400,"INVALID_WEEK","계획 주차는 월요일 날짜로 지정해 주세요.");
         if((d.source()==Issue.SourceType.DAILY || d.source()==Issue.SourceType.WEEKLY) && d.meetingDate()==null)
             throw new ApiException(400,"MEETING_DATE_REQUIRED","회의에서 정한 작업에는 회의 날짜를 넣어주세요.");
     }
@@ -221,8 +225,12 @@ public class IssueService {
                 var marker=MARKER.matcher(remote.body());
                 if(marker.find()) row=rows.stream().filter(i -> marker.group(1).equals(i.getPublishRequestKey()) && i.getGithubIssueId()==null).findFirst().orElse(null);
             }
-            if(row==null) row=issues.save(Issue.builder().repository(repo).issueKey("G-"+repositoryId+"-"+remote.number())
-                    .title(remote.title()).sourceType(Issue.SourceType.GITHUB).build());
+            if(row==null) {
+                row=Issue.builder().repository(repo).issueKey("G-"+repositoryId+"-"+remote.number())
+                    .title(remote.title()).sourceType(Issue.SourceType.GITHUB).build();
+                row.schedule(ProjectWeeks.current(projectRows.findById(projectId).orElseThrow()));
+                row=issues.save(row);
+            }
             if(row.getGithubIssueId()==null && row.getPublishRequestKey()==null) row.assignDisplayKey();
             if(row.getGithubUpdatedAt()!=null && utc(remote.updatedAt()).isBefore(row.getGithubUpdatedAt())) continue;
             applyRemote(row,remote);existing.put(remote.id(),row);

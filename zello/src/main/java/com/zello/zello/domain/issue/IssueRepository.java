@@ -26,7 +26,7 @@ public interface IssueRepository extends JpaRepository<Issue, Long> {
         and (:assigneeFilter='' or lower(a.login)=lower(:assigneeFilter))
         and (:week is null or i.workStatus=com.zello.zello.domain.issue.Issue.WorkStatus.BACKLOG
             or (i.workStatus<>com.zello.zello.domain.issue.Issue.WorkStatus.DONE and i.plannedWeekStart<=:week)
-            or (i.workStatus=com.zello.zello.domain.issue.Issue.WorkStatus.DONE and i.completedAt>=:weekAt and i.completedAt<:weekEnd))
+            or (i.workStatus=com.zello.zello.domain.issue.Issue.WorkStatus.DONE and i.completedAt>=:weekAt and (:weekEnd is null or i.completedAt<:weekEnd)))
         order by i.boardOrder asc, i.id desc
         """)
     Page<Issue> search(Long projectId, Collection<Long> repositories, boolean archived, boolean activeOnly, Issue.WorkStatus status,

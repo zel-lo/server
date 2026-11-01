@@ -42,6 +42,9 @@ Table "projects" {
   "id" BIGINT [pk, not null, increment]
   "owner_user_id" BIGINT [not null]
   "name" VARCHAR(100) [not null]
+  "start_date" DATE
+  "end_date" DATE
+  "creation_request_key" VARCHAR(64)
   "goal" TEXT
   "description" TEXT
   "timezone" VARCHAR(64) [not null]
@@ -51,7 +54,12 @@ Table "projects" {
   "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
   "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
 
+  Indexes {
+    (creation_request_key) [unique, name: 'uk_projects_creation_request']
+  }
+
   Checks {
+    `(start_date IS NULL AND end_date IS NULL) OR (start_date IS NOT NULL AND end_date IS NOT NULL AND end_date >= start_date)` [name: 'ck_projects_period']
     `sync_interval_minutes > 0` [name: 'ck_projects_sync_interval']
     `version >= 0` [name: 'ck_projects_version']
   }

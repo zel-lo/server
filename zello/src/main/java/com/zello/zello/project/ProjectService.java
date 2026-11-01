@@ -4,6 +4,8 @@ import com.zello.zello.api.ApiException;
 import com.zello.zello.domain.project.*;
 import com.zello.zello.domain.user.UserRepository;
 import java.util.List;
+import java.util.Objects;
+import java.time.LocalDate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,9 +30,27 @@ public class ProjectService {
 
     @Transactional
     public ProjectView create(long userId, String name, String description) {
-        var user = users.findById(userId).orElseThrow(() -> new ApiException(401, "AUTHENTICATION_REQUIRED", "로그인이 필요합니다."));
+        return create(userId,name,description,null,null,null);
+    }
+
+    @Transactional
+    public ProjectView create(long userId,String name,String description,LocalDate start,LocalDate end,String requestKey) {
+        ProjectWeeks.validatePeriod(start,end);
+        if(requestKey!=null && start==null) throw new ApiException(400,"PROJECT_PERIOD_REQUIRED","프로젝트 시작일과 종료일을 입력해 주세요.");
+        var user = users.lockForProjectCreation(userId).orElseThrow(() -> new ApiException(401, "AUTHENTICATION_REQUIRED", "로그인이 필요합니다."));
+        String normalizedDescription=description==null ? null : description.strip();
+        if(requestKey!=null) {
+            var previous=projects.findByCreationRequestKey(requestKey);
+            if(previous.isPresent()) {
+                var project=previous.get();
+                if(!project.getOwnerUserId().equals(userId) || !project.getName().equals(name.strip()) || !Objects.equals(project.getDescription(),normalizedDescription)
+                    || !Objects.equals(project.getStartDate(),start) || !Objects.equals(project.getEndDate(),end))
+                    throw new ApiException(409,"REQUEST_KEY_CONFLICT","이미 다른 프로젝트 생성에 사용한 요청이에요.");
+                return detail(project.getId(),userId);
+            }
+        }
         Project project = projects.saveAndFlush(Project.builder().ownerUser(user).name(name.strip())
-                .description(description == null ? null : description.strip()).build());
+                .description(normalizedDescription).startDate(start).endDate(end).creationRequestKey(requestKey).build());
         var member = members.save(ProjectMember.builder().project(project).user(user).role(ProjectMember.Role.ADMIN).build());
         return view(project, member, userId);
     }
@@ -68,8 +88,8 @@ public class ProjectService {
     private ProjectView view(Project project, ProjectMember member, long userId) {
         boolean owner = project.getOwnerUserId().equals(userId);
         return new ProjectView(project.getId().toString(), project.getName(), project.getDescription(),
-                owner ? "OWNER" : member.getRole().name(), owner || member.getRole() == ProjectMember.Role.ADMIN, project.getVersion());
+                owner ? "OWNER" : member.getRole().name(), owner || member.getRole() == ProjectMember.Role.ADMIN, project.getVersion(),project.getStartDate(),project.getEndDate(),ProjectWeeks.count(project));
     }
 
-    public record ProjectView(String id, String name, String description, String role, boolean canManageRepositories, Long version) { }
+    public record ProjectView(String id, String name, String description, String role, boolean canManageRepositories, Long version,LocalDate startDate,LocalDate endDate,int totalWeeks) { }
 }

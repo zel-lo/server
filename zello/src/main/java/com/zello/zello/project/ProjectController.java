@@ -26,7 +26,7 @@ public class ProjectController {
     @PostMapping
     ResponseEntity<ProjectService.ProjectView> create(@AuthenticationPrincipal ZelloPrincipal principal,
                                                      @Valid @RequestBody CreateProject input) {
-        var project = service.create(principal.userId(), input.name(), input.description());
+        var project = service.create(principal.userId(), input.name(), input.description(), input.startDate(), input.endDate(), input.requestKey());
         return ResponseEntity.created(URI.create("/api/projects/" + project.id())).cacheControl(CacheControl.noStore()).body(project);
     }
 
@@ -35,5 +35,6 @@ public class ProjectController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.detail(projectId, principal.userId()));
     }
 
-    public record CreateProject(@NotBlank @Size(max = 100) String name, @Size(max = 4000) String description) { }
+    public record CreateProject(@NotBlank @Size(max = 100) String name, @Size(max = 4000) String description, java.time.LocalDate startDate, java.time.LocalDate endDate,
+            @jakarta.validation.constraints.Pattern(regexp="[A-Za-z0-9-]{16,64}") String requestKey) { }
 }

@@ -15,9 +15,11 @@ import lombok.NoArgsConstructor;
 @Getter
 @Entity
 @Table(name = "projects",
+        uniqueConstraints = @UniqueConstraint(name = "uk_projects_creation_request", columnNames = "creation_request_key"),
         check = {
                 @CheckConstraint(name = "ck_projects_sync_interval", constraint = "sync_interval_minutes > 0"),
-                @CheckConstraint(name = "ck_projects_version", constraint = "version >= 0")
+                @CheckConstraint(name = "ck_projects_version", constraint = "version >= 0"),
+                @CheckConstraint(name = "ck_projects_period", constraint = "(start_date IS NULL AND end_date IS NULL) OR (start_date IS NOT NULL AND end_date IS NOT NULL AND end_date >= start_date)")
         })
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Project extends VersionedEntity {
@@ -26,6 +28,15 @@ public class Project extends VersionedEntity {
 
     @Column(name = "name", nullable = false, length = 100)
     private String name;
+
+    @Column(name = "start_date")
+    private LocalDate startDate;
+
+    @Column(name = "end_date")
+    private LocalDate endDate;
+
+    @Column(name = "creation_request_key", length = 64)
+    private String creationRequestKey;
 
     @Column(name = "goal", columnDefinition = "text")
     private String goal;
@@ -54,7 +65,7 @@ public class Project extends VersionedEntity {
             String description,
             String timezone,
             Integer syncIntervalMinutes,
-            LocalDateTime archivedAt) {
+            LocalDateTime archivedAt, LocalDate startDate, LocalDate endDate, String creationRequestKey) {
         this.ownerUser = EntitySupport.required(ownerUser, "ownerUser");
         this.ownerUserId = EntitySupport.required(ownerUser.getId(), "persisted ownerUser.id");
         this.name = EntitySupport.text(name, "name");
@@ -63,6 +74,9 @@ public class Project extends VersionedEntity {
         this.timezone = Objects.requireNonNullElseGet(timezone, () -> "Asia/Seoul");
         this.syncIntervalMinutes = Objects.requireNonNullElseGet(syncIntervalMinutes, () -> 15);
         this.archivedAt = archivedAt;
+        this.startDate = startDate;
+        this.endDate = endDate;
+        this.creationRequestKey = creationRequestKey;
     }
 
     public void rename(String name) {

@@ -256,6 +256,25 @@ class IssueApiTests {
                 +",\"githubState\":\"OPEN\",\"placement\":{\"beforeId\":"+(beforeId==null ? "null" : "\""+beforeId+"\"")+"}}"));
     }
 
+
+    @Test void projectPeriodUsesItsOwnWeekAnchorForPlanningAndIssueQueries() throws Exception {
+        projectId=Long.parseLong(JsonPath.read(mvc.perform(post("/api/projects").with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"name\":\"기간이 있는 프로젝트\",\"startDate\":\"2026-10-28\",\"endDate\":\"2026-11-10\"}"))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(),"$.id"));
+        repositoryId=Long.parseLong(JsonPath.read(mvc.perform(post(base("/repositories")).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"githubRepositoryId\":\""+sourceId+"\"}"))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(),"$.id"));
+        var id=createId();
+        var current=com.zello.zello.project.ProjectWeeks.current(projects.findById(projectId).orElseThrow()).toString();
+        detail(id).andExpect(jsonPath("$.plannedWeekStart").value(current));
+        var planned=details(null).replace("\"status\":\"TODO\"","\"status\":\"TODO\",\"plannedWeekStart\":\"2026-11-04\"");
+        update(id,version(id),planned,"OPEN").andExpect(status().isOk());
+        mvc.perform(get(base("/issues")+"?week=2026-11-04").with(as(owner))).andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1));
+        mvc.perform(get(base("/issues")+"?week=2026-10-28").with(as(owner))).andExpect(status().isOk()).andExpect(jsonPath("$.total").value(0));
+        mvc.perform(get(base("/issues")+"?week=2026-11-02").with(as(owner))).andExpect(status().isBadRequest());
+        verifyNoInteractions(github);
+    }
+
     ResultActions update(String id,long version,String details,String state) throws Exception {
         return mvc.perform(patch(base("/issues/"+id)).with(as(owner)).with(csrf()).contentType("application/json")
                 .content("{\"version\":"+version+",\"details\":"+details+",\"githubState\":\""+state+"\"}"));
