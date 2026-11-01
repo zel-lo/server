@@ -102,7 +102,11 @@ class ProjectCollaborationApiTests {
 
     @Test void exactExpiryBoundaryIsRejectedAndRevocationIsIdempotent() throws Exception {
         var expired = create(owner, "MEMBER", 1, null);
-        time.set(time.get().plusSeconds(3600));
+        // Compare against the persisted boundary: the DB may round nanoseconds.
+        var expiresAt = invitations.findById(expired.id()).orElseThrow().getExpiresAt();
+        time.set(expiresAt.minusNanos(1).toInstant(ZoneOffset.UTC));
+        preview(user("before-expiry"), expired.token()).andExpect(jsonPath("$.status").value("PENDING"));
+        time.set(expiresAt.toInstant(ZoneOffset.UTC));
         preview(user("expired"), expired.token()).andExpect(jsonPath("$.status").value("EXPIRED"));
         accept(user("expired-accept"), expired.token()).andExpect(status().isGone());
         var revoked = create(owner, "VIEWER", 24, null);

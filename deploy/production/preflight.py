@@ -3,6 +3,7 @@
 import base64
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -20,6 +21,9 @@ result = subprocess.run([
     '-f', str(root / 'compose.yaml'), 'config', '--format', 'json',
 ], capture_output=True, text=True)
 if result.returncode:
+    missing = re.findall(r'required variable ([A-Z_]+) is missing', result.stderr)
+    if missing:
+        sys.exit('Fill ' + ', '.join(sorted(set(missing))) + ' in .env.')
     sys.exit('Configuration is incomplete. Fill MYSQL_PASSWORD, MYSQL_ROOT_PASSWORD, '
              'SESSION_ENCRYPTION_KEY, GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in .env.')
 
