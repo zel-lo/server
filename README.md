@@ -5,6 +5,8 @@ zello server repository
 
 `main` 대상 PR과 `main` push에서 GitHub Actions가 테스트·빌드, MySQL 컨테이너 기동과 Flyway 마이그레이션을 검증합니다. `main`에서는 검증을 통과한 이미지를 GHCR에 업로드합니다. 실행 방법과 운영 배포 범위는 [CI_CD.md](CI_CD.md)를 참고하세요.
 
+`zello.asia`의 서버 구성, OAuth와 배포 Secrets 입력 방법은 [PRODUCTION.md](PRODUCTION.md)를 참고하세요.
+
 ## 설계 문서
 
 - [ERD와 테이블 명세](zello/docs/erd.md): Flyway V1~V5와 JPA에 대응하는 MySQL 스키마 명세.
