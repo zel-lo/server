@@ -58,13 +58,13 @@ public class IssueService {
         return new View(i.getId().toString(),i.getVersion(),i.getIssueKey(),repo.getId().toString(),repo.getOwnerLogin(),repo.getName(),
                 i.getGithubNumber(),i.getGithubUrl(),i.getTitle(),i.getDescription(),i.getWorkStatus(),i.getPriority(),i.getSourceType(),
                 i.getMeetingDate(),i.getMeetingContext(),i.getAcceptanceCriteria(),i.getGithubState(),
-                i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError());
+                i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError(),i.getBoardOrder(),i.getPlannedWeekStart(),i.getCompletedAt());
     }
-    public Page list(long projectId,long userId,List<Long> visible,boolean archived,boolean activeOnly,Issue.WorkStatus status,boolean mine,String query,int page,int size) {
+    public Page list(long projectId,long userId,List<Long> visible,boolean archived,boolean activeOnly,Issue.WorkStatus status,boolean mine,String query,int page,int size,LocalDate week,Long repositoryFilter,String assigneeFilter) {
         projects.requireMember(projectId,userId,false);
         if(visible.isEmpty()) return new Page(List.of(),page,false,0);
         Long assignee=mine ? users.findById(userId).orElseThrow(ProjectService::notFound).getGithubAccountId() : null;
-        var result=issues.search(projectId,visible,archived,activeOnly,status,assignee,query,PageRequest.of(page-1,size));
+        var result=issues.search(projectId,visible,archived,activeOnly,status,assignee,query,repositoryFilter,"unassigned".equals(assigneeFilter),"unassigned".equals(assigneeFilter) ? "" : assigneeFilter,week,week==null ? null : week.atStartOfDay().minusHours(9),week==null ? null : week.plusWeeks(1).atStartOfDay().minusHours(9),PageRequest.of(page-1,size));
         return new Page(result.map(this::view).getContent(),page,result.hasNext(),result.getTotalElements());
     }
     @Transactional
@@ -87,7 +87,7 @@ public class IssueService {
                 .title(d.title().strip()).description(d.description()).workStatus(d.status()).priority(d.priority())
                 .sourceType(d.source()).meetingDate(d.meetingDate()).meetingContext(d.meetingContext()).acceptanceCriteria(d.acceptanceCriteria())
                 .publishStatus(PublishStatus.LOCAL).publishRequestKey(input.requestKey()).build();
-        row.creationHash(hash);issues.saveAndFlush(row);row.assignDisplayKey();issues.flush();
+        row.schedule(d.plannedWeekStart());row.creationHash(hash);issues.saveAndFlush(row);row.assignDisplayKey();issues.flush();
         notifyAssignment(projectId,userId,row,null);
         return view(row);
     }
@@ -120,6 +120,7 @@ public class IssueService {
             text.append(part==null ? -1 : part.length()).append(':');
             if(part!=null) text.append(part);
         }
+        if(d.plannedWeekStart()!=null) text.append("week:").append(d.plannedWeekStart());
         return hash(text.toString());
     }
     private String hash(String text) {
@@ -152,6 +153,8 @@ public class IssueService {
         issues.findById(id).ifPresent(i -> i.publicationFailed(unknown,message));
     }
     public void validatePlan(Details d) {
+        if(d.plannedWeekStart()!=null && d.plannedWeekStart().getDayOfWeek()!=DayOfWeek.MONDAY)
+            throw new ApiException(400,"INVALID_WEEK","계획 주차는 월요일 날짜로 지정해 주세요.");
         if((d.source()==Issue.SourceType.DAILY || d.source()==Issue.SourceType.WEEKLY) && d.meetingDate()==null)
             throw new ApiException(400,"MEETING_DATE_REQUIRED","회의에서 정한 작업에는 회의 날짜를 넣어주세요.");
     }
@@ -161,6 +164,7 @@ public class IssueService {
     @Transactional
     public View edit(long projectId,long userId,long id,Update input,GitHubIssues.Remote remote) {
         lock(projectId); var row=find(projectId,userId,id,true); version(row,input.version());
+        validatePlacement(projectId,userId,id,input.details().status(),input.placement());
         Long before=row.getAssigneeAccountId();
         if(remote!=null) applyRemote(row,remote);
         else {
@@ -169,7 +173,37 @@ public class IssueService {
                 row.assignTo(assignee(projectId,input.details().assignee()));
         }
         var d=input.details(); row.plan(row.getGithubState()==Issue.GithubState.CLOSED ? Issue.WorkStatus.DONE : d.status(),d.priority(),d.source(),d.meetingDate(),d.meetingContext(),d.acceptanceCriteria());
+        row.schedule(d.plannedWeekStart());
+        if(input.placement()!=null) place(projectId,row,input.placement());
         issues.flush();notifyAssignment(projectId,userId,row,before);return view(row);
+    }
+
+    public Issue validatePlacement(long projectId,long userId,long id,Issue.WorkStatus status,Placement placement) {
+        if(placement==null) return null;
+        var row=find(projectId,userId,id,true);
+        if(row.getArchivedAt()!=null) throw new ApiException(409,"ISSUE_ARCHIVED","보관한 작업은 먼저 복원해 주세요.");
+        if(placement.beforeId()==null) return null;
+        var target=find(projectId,userId,placement.beforeId(),false);
+        if(target.getId()==id || target.getArchivedAt()!=null || target.getWorkStatus()!=status)
+            throw new ApiException(409,"BOARD_CHANGED","보드가 변경됐어요. 최신 작업을 확인한 뒤 다시 옮겨주세요.");
+        return target;
+    }
+
+    private void place(long projectId,Issue row,Placement placement) {
+        var column=new ArrayList<>(issues.boardColumn(projectId,row.getWorkStatus()));
+        column.removeIf(item -> item.getId().equals(row.getId()));
+        int index=placement.beforeId()==null ? column.size() : java.util.stream.IntStream.range(0,column.size())
+                .filter(i -> column.get(i).getId().equals(placement.beforeId())).findFirst()
+                .orElseThrow(() -> new ApiException(409,"BOARD_CHANGED","보드가 변경됐어요. 다시 불러와 주세요."));
+        long left=index==0 ? (column.isEmpty() ? 0 : column.get(0).getBoardOrder()-2048) : column.get(index-1).getBoardOrder();
+        long right=index==column.size() ? left+2048 : column.get(index).getBoardOrder();
+        // Initial rows share rank zero. Rebalance only when the insertion gap is exhausted.
+        if(right-left<2 || left<Long.MIN_VALUE+4096 || right>Long.MAX_VALUE-4096) {
+            for(int i=0;i<column.size();i++) column.get(i).placeOnBoard((i+1L)*1024);
+            left=index==0 ? 0 : column.get(index-1).getBoardOrder();
+            right=index==column.size() ? left+2048 : column.get(index).getBoardOrder();
+        }
+        row.placeOnBoard(left+(right-left)/2);
     }
     @Transactional
     public void archive(long projectId,long userId,long id,long version,boolean archived) {
@@ -207,6 +241,7 @@ public class IssueService {
         row.syncFromRemote(remote.id(),remote.number(),remote.htmlUrl(),remote.title(),body,
                 "open".equals(remote.state()) ? Issue.GithubState.OPEN : Issue.GithubState.CLOSED,
                 remote.user()==null ? null : account(remote.user()),assignee,utc(remote.updatedAt()),EntitySupport.now());
+        row.recordGithubCompletion(remote.closedAt()==null ? null : utc(remote.closedAt()));
     }
     private GitHubAccount account(GitHubIssues.Person p) {
         var type="Bot".equals(p.type()) ? GitHubAccount.AccountType.BOT : GitHubAccount.AccountType.USER;
@@ -233,14 +268,15 @@ public class IssueService {
     public record Details(@NotBlank @Size(max=255) String title,@NotNull @Size(max=50000) String description,
             @NotNull Issue.WorkStatus status,@NotNull Issue.Priority priority,@NotNull Issue.SourceType source,
             LocalDate meetingDate,@Size(max=10000) String meetingContext,@Size(max=10000) String acceptanceCriteria,
-            @jakarta.validation.constraints.Pattern(regexp="[A-Za-z0-9][A-Za-z0-9-]{0,99}") String assignee) { }
+            @jakarta.validation.constraints.Pattern(regexp="[A-Za-z0-9][A-Za-z0-9-]{0,99}") String assignee,LocalDate plannedWeekStart) { }
     public record Create(@NotNull @Positive Long repositoryId,@NotNull @jakarta.validation.Valid Details details,
                          @NotBlank @jakarta.validation.constraints.Pattern(regexp="[A-Za-z0-9-]{16,64}") String requestKey) { }
     public record Update(@NotNull @PositiveOrZero Long version,@NotNull @jakarta.validation.Valid Details details,
-                         @NotNull Issue.GithubState githubState) { }
+                         @NotNull Issue.GithubState githubState,@jakarta.validation.Valid Placement placement) { }
+    public record Placement(@Positive Long beforeId) { }
     public record Reservation(long id,boolean retry,boolean published) { }
     public record Page(List<View> items,int page,boolean hasNext,long total) { }
     public record View(String id,Long version,String key,String repositoryId,String repositoryOwner,String repositoryName,
             Integer number,String url,String title,String description,Issue.WorkStatus status,Issue.Priority priority,Issue.SourceType source,
-            LocalDate meetingDate,String meetingContext,String acceptanceCriteria,Issue.GithubState githubState,String assignee,boolean archived,PublishStatus publishStatus,String lastPublishError) { }
+            LocalDate meetingDate,String meetingContext,String acceptanceCriteria,Issue.GithubState githubState,String assignee,boolean archived,PublishStatus publishStatus,String lastPublishError,long boardOrder,LocalDate plannedWeekStart,LocalDateTime completedAt) { }
 }

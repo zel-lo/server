@@ -27,6 +27,8 @@ import org.hibernate.type.SqlTypes;
                 @UniqueConstraint(name = "uk_issues_repository_number", columnNames = {"repository_id", "github_number"})
         },
         indexes = {
+                @Index(name = "idx_issues_week", columnList = "planned_week_start, work_status, completed_at"),
+                @Index(name = "idx_issues_board", columnList = "repository_id, archived_at, work_status, board_order, id"),
                 @Index(name = "idx_issues_repository_status_priority", columnList = "repository_id, work_status, priority"),
                 @Index(name = "idx_issues_assignee_status_repository", columnList = "assignee_account_id, work_status, repository_id"),
                 @Index(name = "idx_issues_repository_source_meeting", columnList = "repository_id, source_type, meeting_date")
@@ -177,6 +179,7 @@ public class Issue extends VersionedEntity {
         this.description = description;
         this.acceptanceCriteria = acceptanceCriteria;
         this.workStatus = Objects.requireNonNullElseGet(workStatus, () -> WorkStatus.BACKLOG);
+        if (this.workStatus == WorkStatus.DONE) this.completedAt = EntitySupport.now();
         this.priority = Objects.requireNonNullElseGet(priority, () -> Priority.MEDIUM);
         this.sourceType = Objects.requireNonNullElseGet(sourceType, () -> SourceType.REQUEST);
         this.meetingDate = meetingDate;
@@ -193,6 +196,23 @@ public class Issue extends VersionedEntity {
 
     @Column(name = "creation_hash", length = 64)
     private String creationHash;
+
+    @Column(name = "board_order", nullable = false)
+    private long boardOrder;
+
+    @Column(name = "planned_week_start", nullable = false)
+    private LocalDate plannedWeekStart = LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).with(java.time.DayOfWeek.MONDAY);
+
+    @Column(name = "completed_at", columnDefinition = "datetime(6)")
+    private LocalDateTime completedAt;
+
+    public void recordGithubCompletion(LocalDateTime closedAt) {
+        if(this.githubState==GithubState.CLOSED && closedAt!=null) this.completedAt=closedAt;
+    }
+
+    public void schedule(LocalDate week) { if (week != null) this.plannedWeekStart = week; }
+
+    public void placeOnBoard(long order) { this.boardOrder = order; }
     public void assignDisplayKey() { this.issueKey = "ZELLO-" + EntitySupport.required(getId(), "persisted issue.id"); }
     public void creationHash(String hash) { this.creationHash = hash; }
     public void preparePublish(String key) { this.publishRequestKey = key; claim(EntitySupport.now()); }
@@ -209,6 +229,8 @@ public class Issue extends VersionedEntity {
     }
 
     public void plan(WorkStatus status, Priority priority, SourceType source, LocalDate date, String context, String criteria) {
+        if (status == WorkStatus.DONE && this.completedAt == null) this.completedAt = EntitySupport.now();
+        if (status != WorkStatus.DONE) this.completedAt = null;
         this.workStatus = status;
         this.priority = priority;
         this.sourceType = source;
@@ -233,8 +255,14 @@ public class Issue extends VersionedEntity {
         this.githubUrl = url;
         this.title = EntitySupport.text(title, "title");
         this.description = body;
-        if (state == GithubState.CLOSED) this.workStatus = WorkStatus.DONE;
-        else if (this.githubState == GithubState.CLOSED && this.workStatus == WorkStatus.DONE) this.workStatus = WorkStatus.TODO;
+        if (state == GithubState.CLOSED) {
+            if (this.completedAt == null) this.completedAt = updatedAt == null ? now : updatedAt;
+            this.workStatus = WorkStatus.DONE;
+        }
+        else if (this.githubState == GithubState.CLOSED && this.workStatus == WorkStatus.DONE) {
+            this.workStatus = WorkStatus.TODO;
+            this.completedAt = null;
+        }
         this.githubState = state;
         this.authorAccount = author;
         this.authorAccountId = author == null ? null : author.getId();

@@ -28,8 +28,11 @@ public class IssueController {
     ResponseEntity<IssueService.Page> list(@PathVariable long projectId,@AuthenticationPrincipal ZelloPrincipal user,
             Authentication auth,HttpServletRequest request,@RequestParam(defaultValue="false") boolean archived,
             @RequestParam(required=false) Issue.WorkStatus status,@RequestParam(defaultValue="false") boolean mine,@RequestParam(defaultValue="false") boolean activeOnly,
-            @RequestParam(defaultValue="") String query,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="30") int size) {
-        if(page<1 || page>10000 || size<1 || size>100 || query.length()>255) throw new ApiException(400,"INVALID_PAGE","조회 범위를 확인해 주세요.");
+            @RequestParam(defaultValue="") String query,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="30") int size,
+            @RequestParam(required=false) @org.springframework.format.annotation.DateTimeFormat(iso=org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate week, @RequestParam(required=false) Long repositoryId, @RequestParam(defaultValue="") String assignee) {
+        if(page<1 || page>10000 || size<1 || size>100 || query.length()>255 || (repositoryId!=null && repositoryId<1) || (!assignee.isEmpty() && !assignee.equals("unassigned") && !assignee.matches("[A-Za-z0-9][A-Za-z0-9-]{0,99}"))) throw new ApiException(400,"INVALID_PAGE","조회 범위를 확인해 주세요.");
+        if(week!=null && week.getDayOfWeek()!=java.time.DayOfWeek.MONDAY)
+            throw new ApiException(400,"INVALID_WEEK","주차는 월요일 날짜로 선택해 주세요.");
         var repos=service.connected(projectId,user.userId());
         var visible=new ArrayList<Long>();
         if(!repos.isEmpty()) {
@@ -37,7 +40,7 @@ public class IssueController {
             for(var repo:repos) try { repositories.repository(token,repo.getGithubRepoId());visible.add(repo.getId()); }
                 catch(ApiException e) { if(e.status()!=404) throw e; }
         }
-        return ok(service.list(projectId,user.userId(),visible,archived,activeOnly,status,mine,query.strip(),page,size));
+        return ok(service.list(projectId,user.userId(),visible,archived,activeOnly,status,mine,query.strip(),page,size,week,repositoryId,assignee));
     }
     @GetMapping("/issues/{id}")
     ResponseEntity<IssueService.View> detail(@PathVariable long projectId,@PathVariable long id,@AuthenticationPrincipal ZelloPrincipal user,
@@ -92,6 +95,7 @@ public class IssueController {
     ResponseEntity<IssueService.View> update(@PathVariable long projectId,@PathVariable long id,@Valid @RequestBody IssueService.Update input,
             @AuthenticationPrincipal ZelloPrincipal user,Authentication auth,HttpServletRequest request) {
         var row=service.find(projectId,user.userId(),id,true);service.version(row,input.version());service.validatePlan(input.details());
+        var target=service.validatePlacement(projectId,user.userId(),id,input.details().status(),input.placement());
         if(!Objects.equals(row.getAssigneeAccount()==null ? null : row.getAssigneeAccount().getLogin(),input.details().assignee()))
             service.validateAssignee(projectId,input.details().assignee());
         if(input.details().source()==Issue.SourceType.GITHUB && row.getSourceType()!=Issue.SourceType.GITHUB)
@@ -100,6 +104,8 @@ public class IssueController {
             throw new ApiException(409,"ISSUE_IN_PROGRESS","이전 GitHub 발행 결과를 먼저 확인해 주세요.");
         var token=tokens.oauthToken(auth,request);
         var repo=repositories.repository(token,row.getRepository().getGithubRepoId());
+        if(target!=null && !target.getRepositoryId().equals(row.getRepositoryId()))
+            repositories.repository(token,target.getRepository().getGithubRepoId());
         var d=input.details();
         if(d.assignee()!=null) github.requireAssignee(token,repo.owner().login(),repo.name(),d.assignee());
         if(row.getPublishStatus()!=com.zello.zello.domain.common.PublishStatus.PUBLISHED)

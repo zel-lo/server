@@ -237,6 +237,9 @@ Table "issues" {
   "issue_key" VARCHAR(32) [not null]
   "archived_at" DATETIME(6)
   "creation_hash" VARCHAR(64)
+  "board_order" BIGINT [not null, default: 0]
+  "planned_week_start" DATE [not null]
+  "completed_at" DATETIME(6)
   "repository_id" BIGINT [not null]
   "author_account_id" BIGINT
   "assignee_account_id" BIGINT
@@ -280,6 +283,8 @@ Table "issues" {
     publish_request_key [unique, name: "uk_issues_publish_request"]
     (repository_id, github_issue_id) [unique, name: "uk_issues_repository_github_id"]
     (repository_id, github_number) [unique, name: "uk_issues_repository_number"]
+    (planned_week_start, work_status, completed_at) [name: "idx_issues_week"]
+    (repository_id, archived_at, work_status, board_order, id) [name: "idx_issues_board"]
     (repository_id, work_status, priority) [name: "idx_issues_repository_status_priority"]
     (assignee_account_id, work_status, repository_id) [name: "idx_issues_assignee_status_repository"]
     (repository_id, source_type, meeting_date) [name: "idx_issues_repository_source_meeting"]
