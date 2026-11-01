@@ -1,0 +1,11 @@
+.git
+.github
+**/.gradle
+**/build
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.log
+**/.DS_Store
+**/.idea
