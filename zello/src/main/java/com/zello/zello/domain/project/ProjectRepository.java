@@ -7,6 +7,8 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 
 public interface ProjectRepository extends JpaRepository<Project, Long> {
+    Optional<Project> findByCreationRequestKey(String key);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from Project p where p.id = :id")
     Optional<Project> findLockedById(Long id);

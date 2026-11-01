@@ -31,8 +31,7 @@ public class IssueController {
             @RequestParam(defaultValue="") String query,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="30") int size,
             @RequestParam(required=false) @org.springframework.format.annotation.DateTimeFormat(iso=org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate week, @RequestParam(required=false) Long repositoryId, @RequestParam(defaultValue="") String assignee) {
         if(page<1 || page>10000 || size<1 || size>100 || query.length()>255 || (repositoryId!=null && repositoryId<1) || (!assignee.isEmpty() && !assignee.equals("unassigned") && !assignee.matches("[A-Za-z0-9][A-Za-z0-9-]{0,99}"))) throw new ApiException(400,"INVALID_PAGE","조회 범위를 확인해 주세요.");
-        if(week!=null && week.getDayOfWeek()!=java.time.DayOfWeek.MONDAY)
-            throw new ApiException(400,"INVALID_WEEK","주차는 월요일 날짜로 선택해 주세요.");
+        if(week!=null) com.zello.zello.project.ProjectWeeks.requireWeek(service.projectSchedule(projectId,user.userId()),week);
         var repos=service.connected(projectId,user.userId());
         var visible=new ArrayList<Long>();
         if(!repos.isEmpty()) {
@@ -53,7 +52,7 @@ public class IssueController {
     ResponseEntity<IssueService.View> create(@PathVariable long projectId,@Valid @RequestBody IssueService.Create input,
             @AuthenticationPrincipal ZelloPrincipal user,Authentication auth,HttpServletRequest request) {
         var repo=service.repository(projectId,user.userId(),input.repositoryId(),true);
-        service.validatePlan(input.details());service.validateAssignee(projectId,input.details().assignee());
+        service.validatePlan(projectId,user.userId(),input.details());service.validateAssignee(projectId,input.details().assignee());
         var token=tokens.oauthToken(auth,request);
         var current=repositories.repository(token,repo.getGithubRepoId());
         if(input.details().assignee()!=null) github.requireAssignee(token,current.owner().login(),current.name(),input.details().assignee());
@@ -94,7 +93,7 @@ public class IssueController {
     @PatchMapping("/issues/{id}")
     ResponseEntity<IssueService.View> update(@PathVariable long projectId,@PathVariable long id,@Valid @RequestBody IssueService.Update input,
             @AuthenticationPrincipal ZelloPrincipal user,Authentication auth,HttpServletRequest request) {
-        var row=service.find(projectId,user.userId(),id,true);service.version(row,input.version());service.validatePlan(input.details());
+        var row=service.find(projectId,user.userId(),id,true);service.version(row,input.version());service.validatePlan(projectId,user.userId(),input.details());
         var target=service.validatePlacement(projectId,user.userId(),id,input.details().status(),input.placement());
         if(!Objects.equals(row.getAssigneeAccount()==null ? null : row.getAssigneeAccount().getLogin(),input.details().assignee()))
             service.validateAssignee(projectId,input.details().assignee());

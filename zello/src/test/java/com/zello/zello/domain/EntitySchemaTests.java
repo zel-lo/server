@@ -88,7 +88,7 @@ class EntitySchemaTests {
             assertThat(expectedTables).isEqualTo(21);
             assertThat(actual).hasSize(expectedTables);
             assertThat(checkedForeignKeys).isEqualTo(47);
-            assertThat(checkedConstraints).isEqualTo(49);
+            assertThat(checkedConstraints).isEqualTo(50);
             String mysqlDdl = String.join(";\n", new SchemaCreatorImpl(registry).generateCreationCommands(metadata, false));
             assertThat(mysqlDdl).contains("create table issues", "create table notifications", "json", "auto_increment");
             // Retain the generated MySQL script for inspection without connecting to a server.
