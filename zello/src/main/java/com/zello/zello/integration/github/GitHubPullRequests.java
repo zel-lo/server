@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
@@ -93,7 +94,13 @@ public class GitHubPullRequests {
         return new ApiException(503, "GITHUB_RESULT_UNKNOWN", "PR이 만들어졌는지 확인하지 못했어요. 잠시 후 코드 검토 화면에서 새로고침해 주세요.");
     }
 
-    public List<Fetched> fetch(String token, String owner, String repository) {
+    public List<Fetched> fetch(String token, String owner, String repository) { return fetch(token, owner, repository, Set.of()); }
+
+    /**
+     * reviewAlso는 zello에 열린 상태로 저장된 PR의 GitHub id. 그 사이 닫히거나 병합됐어도 리뷰를 한 번 더 읽어
+     * 병합 직전의 승인·수정 요청을 놓치지 않는다.
+     */
+    public List<Fetched> fetch(String token, String owner, String repository, Set<Long> reviewAlso) {
         requireName(owner, repository);
         var remotes = new ArrayList<Remote>();
         for (int page = 1; page <= MAX_PAGES; page++) {
@@ -106,7 +113,7 @@ public class GitHubPullRequests {
         }
         var fetched = new ArrayList<Fetched>(remotes.size());
         for (var remote : remotes) {
-            fetched.add("open".equals(remote.state()) ? reviews(token, owner, repository, remote)
+            fetched.add("open".equals(remote.state()) || reviewAlso.contains(remote.id()) ? reviews(token, owner, repository, remote)
                     : new Fetched(remote, PullRequest.ReviewDecision.UNKNOWN));
         }
         return fetched;
@@ -132,6 +139,15 @@ public class GitHubPullRequests {
         var decision = latest.containsValue("CHANGES_REQUESTED") ? PullRequest.ReviewDecision.CHANGES_REQUESTED
                 : latest.containsValue("APPROVED") ? PullRequest.ReviewDecision.APPROVED : PullRequest.ReviewDecision.PENDING;
         return new Fetched(remote, decision, List.copyOf(reviewed.values()));
+    }
+
+    /** PR 하나의 변경 규모. 목록 API에는 없는 값이라 상세에서만 따로 조회한다. */
+    public Stats stats(String token, String owner, String repository, int number) {
+        requireName(owner, repository);
+        var response = get(token, Stats.class, "/repos/{owner}/{repo}/pulls/{number}", owner, repository, number);
+        var stats = response.getBody();
+        if (stats == null || stats.changedFiles() < 0 || stats.additions() < 0 || stats.deletions() < 0 || stats.commits() < 0) throw invalid();
+        return stats;
     }
 
     /** 리뷰어로 지정할 수 있는 사람. 저장소의 assignees 목록을 쓴다. */
@@ -203,16 +219,24 @@ public class GitHubPullRequests {
     }
     private ApiException invalid() { return new ApiException(502, "INVALID_GITHUB_RESPONSE", "GitHub PR 정보를 확인하지 못했습니다."); }
 
-    /** reviewed는 리뷰를 제출한 사람(PR 작성자 제외). 열린 PR만 채운다. */
-    public record Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision, List<User> reviewed) {
+    /**
+     * reviewed는 리뷰를 제출한 사람(PR 작성자 제외). reviewsFetched는 이번 수집에서 리뷰 목록을 실제로 읽었는지로,
+     * 읽지 않은 닫힌 PR은 저장된 리뷰 결과를 그대로 둔다.
+     */
+    public record Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision, List<User> reviewed, boolean reviewsFetched) {
         public Fetched {
             reviewed = reviewed == null ? List.of() : List.copyOf(reviewed);
         }
 
-        public Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision) { this(pull, reviewDecision, List.of()); }
+        public Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision, List<User> reviewed) { this(pull, reviewDecision, reviewed, true); }
+
+        public Fetched(Remote pull, PullRequest.ReviewDecision reviewDecision) { this(pull, reviewDecision, List.of(), false); }
     }
 
     public record Candidates(List<User> users, boolean hasMore) { }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Stats(@JsonProperty("changed_files") int changedFiles, int additions, int deletions, int commits) { }
 
     public record NewPull(String title, String body, String head, String base, boolean draft) { }
 
