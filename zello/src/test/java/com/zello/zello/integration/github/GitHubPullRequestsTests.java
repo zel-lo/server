@@ -187,12 +187,72 @@ class GitHubPullRequestsTests {
     @Test
     void readsChangeStatsFromThePullRequestDetail() {
         server.expect(requestTo(BASE + "/12")).andRespond(withSuccess(pull(5, 12, "open", "null")
-                .replace("\"title\"", "\"changed_files\":4,\"additions\":120,\"deletions\":30,\"commits\":3,\"title\""), MediaType.APPLICATION_JSON));
+                .replace("\"title\"", "\"changed_files\":4,\"additions\":120,\"deletions\":30,\"commits\":3,\"mergeable_state\":\"clean\",\"title\""), MediaType.APPLICATION_JSON));
         server.expect(requestTo(BASE + "/13")).andRespond(withSuccess("{\"changed_files\":-1,\"additions\":0,\"deletions\":0,\"commits\":0}", MediaType.APPLICATION_JSON));
         var stats = github.stats("token", "team", "server", 12);
-        assertThat(stats).isEqualTo(new GitHubPullRequests.Stats(4, 120, 30, 3));
+        assertThat(stats).isEqualTo(new GitHubPullRequests.Stats(4, 120, 30, 3, "clean", new GitHubPullRequests.Ref("feat/a", "abc")));
+        assertThat(stats.headSha()).isEqualTo("abc");
         assertThatThrownBy(() -> github.stats("token", "team", "server", 13)).isInstanceOfSatisfying(ApiException.class,
                 error -> assertThat(error.code()).isEqualTo("INVALID_GITHUB_RESPONSE"));
+        server.verify();
+    }
+
+    @Test
+    void submitsAReviewWithOrWithoutABodyAndHidesUpstreamErrors() {
+        server.expect(requestTo(BASE + "/12/reviews")).andExpect(method(org.springframework.http.HttpMethod.POST))
+                .andExpect(jsonPath("$.event").value("APPROVE")).andExpect(jsonPath("$.body").doesNotExist())
+                .andRespond(withSuccess("{\"id\":1,\"state\":\"APPROVED\"}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/12/reviews")).andExpect(jsonPath("$.event").value("REQUEST_CHANGES"))
+                .andExpect(jsonPath("$.body").value("이름 바꿔 주세요")).andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/12/reviews"))
+                .andRespond(withStatus(org.springframework.http.HttpStatus.UNPROCESSABLE_CONTENT).body("private detail"));
+        github.submitReview("token", "team", "server", 12, "APPROVE", null);
+        github.submitReview("token", "team", "server", 12, "REQUEST_CHANGES", "이름 바꿔 주세요");
+        assertThatThrownBy(() -> github.submitReview("token", "team", "server", 12, "APPROVE", null))
+                .isInstanceOfSatisfying(ApiException.class, error -> {
+                    assertThat(error.code()).isEqualTo("REVIEW_REJECTED"); assertThat(error.getMessage()).doesNotContain("private detail"); });
+        server.verify();
+    }
+
+    @Test
+    void mergesWithAMergeCommitAndTheConfirmedHead() {
+        var sha = "a".repeat(40);
+        server.expect(requestTo(BASE + "/12/merge")).andExpect(method(org.springframework.http.HttpMethod.PUT))
+                .andExpect(jsonPath("$.merge_method").value("merge")).andExpect(jsonPath("$.sha").value(sha))
+                .andRespond(withSuccess("{\"sha\":\"" + "b".repeat(40) + "\",\"merged\":true}", MediaType.APPLICATION_JSON));
+        assertThat(github.merge("token", "team", "server", 12, sha)).isEqualTo("b".repeat(40));
+        server.verify();
+    }
+
+    @Test
+    void mapsMergeFailuresToClearReasons() {
+        var sha = "a".repeat(40);
+        server.expect(requestTo(BASE + "/12/merge")).andRespond(withStatus(org.springframework.http.HttpStatus.CONFLICT).body("{}"));
+        server.expect(requestTo(BASE + "/12/merge")).andRespond(withStatus(org.springframework.http.HttpStatus.METHOD_NOT_ALLOWED)
+                .body("{\"message\":\"Pull Request is not mergeable\"}"));
+        server.expect(requestTo(BASE + "/12/merge")).andRespond(withStatus(org.springframework.http.HttpStatus.METHOD_NOT_ALLOWED)
+                .body("{\"message\":\"Merge commits are not allowed on this repository.\"}"));
+        server.expect(requestTo(BASE + "/12/merge")).andRespond(withStatus(org.springframework.http.HttpStatus.FORBIDDEN));
+        assertThatThrownBy(() -> github.merge("token", "team", "server", 12, sha)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("PULL_REQUEST_HEAD_CHANGED"));
+        assertThatThrownBy(() -> github.merge("token", "team", "server", 12, sha)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("PULL_REQUEST_NOT_MERGEABLE"));
+        assertThatThrownBy(() -> github.merge("token", "team", "server", 12, sha)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("MERGE_METHOD_NOT_ALLOWED"));
+        assertThatThrownBy(() -> github.merge("token", "team", "server", 12, sha)).isInstanceOfSatisfying(ApiException.class,
+                error -> assertThat(error.code()).isEqualTo("GITHUB_ACCESS_RESTRICTED"));
+        server.verify();
+    }
+
+    @Test
+    void readsOnePullRequestWithItsReviews() {
+        server.expect(requestTo(BASE + "/12")).andRespond(withSuccess(pull(5, 12, "open", "null"), MediaType.APPLICATION_JSON));
+        server.expect(requestTo(BASE + "/12/reviews?per_page=100")).andRespond(withSuccess(
+                "[{\"user\":{\"id\":9,\"login\":\"dev\"},\"state\":\"APPROVED\"}]", MediaType.APPLICATION_JSON));
+        var fetched = github.pull("token", "team", "server", 12);
+        assertThat(fetched.reviewDecision()).isEqualTo(PullRequest.ReviewDecision.APPROVED);
+        assertThat(fetched.reviewed()).extracting(GitHubPullRequests.User::login).containsExactly("dev");
+        assertThat(fetched.reviewsFetched()).isTrue();
         server.verify();
     }
 

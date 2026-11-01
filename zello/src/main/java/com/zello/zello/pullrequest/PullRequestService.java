@@ -103,6 +103,50 @@ public class PullRequestService {
         return PullRequestView.from(pull, pull.getBody(), reviewersOf(List.of(pull.getId())).getOrDefault(pull.getId(), List.of()));
     }
 
+    /** 상세 화면용. GitHub에서 방금 받은 병합 상태로 리뷰·병합 버튼을 쓸 수 있는지 함께 담는다. */
+    public PullRequestView detail(PullRequest pull, long userId, GitHubPullRequests.Stats stats) {
+        var open = pull.getState() == PullRequest.State.OPEN;
+        var mergeState = stats == null || stats.mergeableState() == null ? "unknown" : stats.mergeableState();
+        var canReview = open && !pull.getDraft() && isReviewer(pull, userId);
+        var canMerge = open && "clean".equals(mergeState) && stats.headSha() != null && canWrite(pull, userId);
+        return detail(pull).withActions(new Actions(canReview, canMerge, open ? mergeState : null, open && stats != null ? stats.headSha() : null));
+    }
+
+    /** 리뷰는 열린 PR(초안 제외)에서, 리뷰어로 요청받았거나 이미 리뷰한 사람만 남길 수 있다. */
+    public void requireReviewer(long projectId, long userId, PullRequest pull) {
+        projects.requireWriter(projectId, userId);
+        if (pull.getState() != PullRequest.State.OPEN || pull.getDraft()) {
+            throw new ApiException(409, "PULL_REQUEST_NOT_REVIEWABLE", "열린 PR에만 리뷰를 남길 수 있어요.");
+        }
+        if (!isReviewer(pull, userId)) throw new ApiException(403, "REVIEWER_REQUIRED", "리뷰어로 지정된 PR에만 리뷰를 남길 수 있어요.");
+    }
+
+    public void requireMergeable(long projectId, long userId, PullRequest pull) {
+        projects.requireWriter(projectId, userId);
+        if (pull.getState() != PullRequest.State.OPEN) throw new ApiException(409, "PULL_REQUEST_NOT_OPEN", "열린 PR만 병합할 수 있어요.");
+    }
+
+    /** 병합은 됐는데 GitHub에서 다시 읽지 못한 경우, 병합된 것으로만 먼저 기록한다. */
+    @Transactional
+    public void markMerged(long pullRequestId, String mergeCommitSha) {
+        pullRequests.findById(pullRequestId).filter(pull -> pull.getState() == PullRequest.State.OPEN).ifPresent(pull -> {
+            pull.markMerged(EntitySupport.now(), mergeCommitSha);
+            pullRequests.flush();
+        });
+    }
+
+    private boolean isReviewer(PullRequest pull, long userId) {
+        var accountId = users.findById(userId).orElseThrow(ProjectService::notFound).getGithubAccountId();
+        if (accountId == null) return false;
+        return reviewers.findByIdPullRequestIdIn(List.of(pull.getId())).stream().anyMatch(row -> accountId.equals(row.getId().getReviewerAccountId())
+                && row.getRequestStatus() != PullRequestReviewer.RequestStatus.REMOVED);
+    }
+
+    /** requireWriter는 예외를 던지면 트랜잭션을 롤백 표시하므로, 버튼 표시용으로는 역할만 확인한다. */
+    private boolean canWrite(PullRequest pull, long userId) {
+        return !"VIEWER".equals(projects.detail(pull.getRepository().getProjectId(), userId).role());
+    }
+
     /**
      * 변경 규모를 다시 받아야 하는지. 열린 PR은 커밋이 더해질 수 있어 매번, 닫히거나 병합된 PR은 아직 없을 때만 받는다.
      */
@@ -157,6 +201,17 @@ public class PullRequestService {
     /** 외부 호출은 트랜잭션 밖에서 끝내고, 여기서는 프로젝트 행 잠금 안에서 반영만 한다. */
     @Transactional
     public int apply(long projectId, long userId, long repositoryId, List<GitHubPullRequests.Fetched> fetched) {
+        applyFetched(projectId, userId, repositoryId, fetched).recordSync(EntitySupport.now());
+        return fetched.size();
+    }
+
+    /** PR 하나만 반영한다. 저장소 전체를 수집한 게 아니라서 마지막 동기화 시각은 바꾸지 않는다. */
+    @Transactional
+    public void refresh(long projectId, long userId, long repositoryId, GitHubPullRequests.Fetched fetched) {
+        applyFetched(projectId, userId, repositoryId, List.of(fetched));
+    }
+
+    private GitRepository applyFetched(long projectId, long userId, long repositoryId, List<GitHubPullRequests.Fetched> fetched) {
         projectRepository.findLockedById(projectId).orElseThrow(ProjectService::notFound);
         projects.requireMember(projectId, userId, false);
         var repository = repositories.findByIdAndProjectId(repositoryId, projectId)
@@ -218,8 +273,7 @@ public class PullRequestService {
             syncReviewers(target, remote.requestedReviewers(), item.reviewed(), target.getState() == PullRequest.State.OPEN || item.reviewsFetched(),
                     storedReviewers.computeIfAbsent(target.getId(), id -> new HashMap<>()), authors, now);
         }
-        repository.recordSync(now);
-        return fetched.size();
+        return repository;
     }
 
     /**
@@ -292,6 +346,10 @@ public class PullRequestService {
 
     public record Reviewer(String login, String avatarUrl) { }
 
+    /** 상세에서만 담는다. mergeState와 headSha는 열린 PR일 때만 있고, headSha는 병합 요청에 그대로 보낸다. */
+    public record Actions(boolean canReview, boolean canMerge, @JsonInclude(JsonInclude.Include.NON_NULL) String mergeState,
+                          @JsonInclude(JsonInclude.Include.NON_NULL) String headSha) { }
+
     /**
      * body(GitHub 원본)는 상세 응답에만 담는다. 목록에서는 응답이 커지지 않도록 null로 두고 JSON에서 뺀다.
      * reviewers는 요청 중이거나 리뷰를 제출한 사람이다. warning은 PR 생성 후 리뷰어 지정만 실패했을 때 담는다.
@@ -302,7 +360,8 @@ public class PullRequestService {
                                   Integer changedFiles, Integer additions, Integer deletions,
                                   Instant openedAt, Instant mergedAt, Instant githubUpdatedAt,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) String body,
-                                  @JsonInclude(JsonInclude.Include.NON_NULL) String warning) {
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) String warning,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) Actions actions) {
         static PullRequestView from(PullRequest pull, String body, List<Reviewer> reviewers) {
             var repo = pull.getRepository();
             var author = pull.getAuthorAccount();
@@ -310,13 +369,19 @@ public class PullRequestService {
                     pull.getGithubNumber(), pull.getGithubUrl(), pull.getTitle(), pull.getHeadBranch(), pull.getBaseBranch(),
                     pull.getState().name(), pull.getDraft(), pull.getReviewDecision().name(), pull.getTeamSummary(),
                     author == null ? null : new Author(author.getLogin(), author.getAvatarUrl()), reviewers, pull.getVersion(),
-                    pull.getChangedFiles(), pull.getAdditions(), pull.getDeletions(), instant(pull.getOpenedAt()), instant(pull.getMergedAt()), instant(pull.getGithubUpdatedAt()), body, null);
+                    pull.getChangedFiles(), pull.getAdditions(), pull.getDeletions(), instant(pull.getOpenedAt()), instant(pull.getMergedAt()), instant(pull.getGithubUpdatedAt()), body, null, null);
         }
 
         public PullRequestView withWarning(String warning) {
             return new PullRequestView(id, repositoryId, repositoryOwner, repositoryName, number, url, title, headBranch, baseBranch, state,
                     draft, reviewDecision, teamSummary, author, reviewers, version, changedFiles, additions, deletions, openedAt, mergedAt,
-                    githubUpdatedAt, body, warning);
+                    githubUpdatedAt, body, warning, actions);
+        }
+
+        PullRequestView withActions(Actions actions) {
+            return new PullRequestView(id, repositoryId, repositoryOwner, repositoryName, number, url, title, headBranch, baseBranch, state,
+                    draft, reviewDecision, teamSummary, author, reviewers, version, changedFiles, additions, deletions, openedAt, mergedAt,
+                    githubUpdatedAt, body, warning, actions);
         }
 
         private static Instant instant(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC); }
