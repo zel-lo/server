@@ -47,10 +47,10 @@ public class PullRequestController {
     @GetMapping
     ResponseEntity<PullRequestService.PullRequestPage> list(@PathVariable long projectId,
             @RequestParam(defaultValue = "all") String state, @RequestParam(required = false) String author,
-            @RequestParam(required = false) String reviewer,
+            @RequestParam(required = false) String reviewer, @RequestParam(required = false) String review,
             @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "30") int size,
             @AuthenticationPrincipal ZelloPrincipal principal, Authentication authentication, HttpServletRequest request) {
-        var filter = filter(state, author, reviewer);
+        var filter = filter(state, author, reviewer, review);
         if (page < 1 || page > 1000 || size < 1 || size > 100) throw new ApiException(400, "INVALID_PAGE", "페이지 범위를 확인해 주세요.");
         var candidates = service.connectedRepositories(projectId, principal.userId());
         var visible = new ArrayList<Long>();
@@ -75,7 +75,16 @@ public class PullRequestController {
             @AuthenticationPrincipal ZelloPrincipal principal, Authentication authentication, HttpServletRequest request) {
         var pull = service.find(projectId, principal.userId(), pullRequestId);
         // 목록과 같은 기준으로, 현재 사용자가 저장소에 접근할 수 있을 때만 본문을 보여준다.
-        oauth.repository(tokens.oauthToken(authentication, request), pull.getRepository().getGithubRepoId());
+        String token = tokens.oauthToken(authentication, request);
+        var current = oauth.repository(token, pull.getRepository().getGithubRepoId());
+        if (service.needsStats(pull)) {
+            try {
+                service.recordStats(pull.getId(), pulls.stats(token, current.owner().login(), current.name(), pull.getGithubNumber()));
+                pull = service.find(projectId, principal.userId(), pullRequestId);
+            } catch (ApiException exception) {
+                // 변경 규모를 못 받아도 상세는 보여주고, 저장해 둔 값이 있으면 그 값을 쓴다.
+            }
+        }
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.detail(pull));
     }
 
@@ -160,7 +169,7 @@ public class PullRequestController {
                 try {
                     // 이름이 바뀐 저장소도 따라가도록 저장된 이름이 아니라 GitHub의 현재 이름을 쓴다.
                     var current = oauth.repository(token, repo.getGithubRepoId());
-                    var fetched = pulls.fetch(token, current.owner().login(), current.name());
+                    var fetched = pulls.fetch(token, current.owner().login(), current.name(), service.openGithubIds(repo.getId()));
                     collected += service.apply(projectId, principal.userId(), repo.getId(), fetched);
                 } catch (ApiException exception) {
                     if (exception.status() != 404) throw exception;
@@ -171,7 +180,7 @@ public class PullRequestController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new SyncResult(collected, skipped, Instant.now()));
     }
 
-    private PullRequestService.Filter filter(String state, String author, String reviewer) {
+    private PullRequestService.Filter filter(String state, String author, String reviewer, String review) {
         if (author != null && !"me".equals(author)) throw new ApiException(400, "INVALID_AUTHOR_FILTER", "작성자 필터를 확인해 주세요.");
         if (reviewer != null && !"me".equals(reviewer)) throw new ApiException(400, "INVALID_REVIEWER_FILTER", "검토자 필터를 확인해 주세요.");
         if (author != null && reviewer != null) throw new ApiException(400, "INVALID_FILTER", "작성자와 검토자 필터는 함께 쓸 수 없어요.");
@@ -182,7 +191,13 @@ public class PullRequestController {
             case "all" -> EnumSet.allOf(PullRequest.State.class);
             default -> throw new ApiException(400, "INVALID_PULL_REQUEST_STATE", "PR 상태 필터를 확인해 주세요.");
         };
-        return new PullRequestService.Filter(states, "me".equals(author), "me".equals(reviewer));
+        // 코드 검토 화면의 검토 상태 필터. pending은 검토 대기, changes_requested는 수정 요청.
+        var decision = review == null ? null : switch (review) {
+            case "pending" -> PullRequest.ReviewDecision.PENDING;
+            case "changes_requested" -> PullRequest.ReviewDecision.CHANGES_REQUESTED;
+            default -> throw new ApiException(400, "INVALID_REVIEW_FILTER", "검토 상태 필터를 확인해 주세요.");
+        };
+        return new PullRequestService.Filter(states, "me".equals(author), "me".equals(reviewer), decision);
     }
 
     public record SyncResult(int collected, int skippedRepositories, Instant syncedAt) { }
