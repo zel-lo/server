@@ -48,11 +48,12 @@ public class PullRequestController {
     ResponseEntity<PullRequestService.PullRequestPage> list(@PathVariable long projectId,
             @RequestParam(defaultValue = "all") String state, @RequestParam(required = false) String author,
             @RequestParam(required = false) String reviewer, @RequestParam(required = false) String review,
-            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "30") int size,
+            @RequestParam(required = false) Long repositoryId, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "30") int size,
             @AuthenticationPrincipal ZelloPrincipal principal, Authentication authentication, HttpServletRequest request) {
         var filter = filter(state, author, reviewer, review);
         if (page < 1 || page > 1000 || size < 1 || size > 100) throw new ApiException(400, "INVALID_PAGE", "페이지 범위를 확인해 주세요.");
-        var candidates = service.connectedRepositories(projectId, principal.userId());
+        var candidates = service.connectedRepositories(projectId, principal.userId()).stream()
+                .filter(repo -> repositoryId == null || repo.getId().equals(repositoryId)).toList();
         var visible = new ArrayList<Long>();
         if (!candidates.isEmpty()) {
             // DB에 저장된 PR이라도 현재 사용자가 저장소에 접근할 수 있을 때만 보여준다.

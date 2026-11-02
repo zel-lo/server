@@ -431,6 +431,29 @@ class PullRequestApiTests {
     }
 
     @Test
+    void listCanBeNarrowedToOneConnectedRepository() throws Exception {
+        long webRepoId = IDS.incrementAndGet();
+        when(github.repository(anyString(), eq(webRepoId))).thenReturn(new GitHubGateway.RemoteRepository(webRepoId,
+                new GitHubGateway.Owner(45, "team", "Organization", null), "web", "team/web", "https://github.com/team/web",
+                null, "TypeScript", "main", true, false));
+        var connected = mvc.perform(post(base("/repositories")).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"githubRepositoryId\":\"" + webRepoId + "\"}")).andExpect(status().isCreated()).andReturn();
+        String webDbId = JsonPath.read(connected.getResponse().getContentAsString(), "$.id");
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING),
+                fetched(2, 2, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        var web = fetched(3, 7, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING);
+        when(pulls.fetch(anyString(), eq("team"), eq("web"), any())).thenReturn(List.of(web));
+        sync().andExpect(jsonPath("$.collected").value(3));
+
+        list("").andExpect(jsonPath("$.items.length()").value(3));
+        list("?repositoryId=" + webDbId).andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].repositoryName").value("web")).andExpect(jsonPath("$.counts.open").value(1));
+        list("?repositoryId=" + repositoryDbId + "&author=me").andExpect(jsonPath("$.counts.open").value(2));
+        // 다른 프로젝트나 없는 저장소를 고르면 아무것도 보여주지 않는다.
+        list("?repositoryId=999999999").andExpect(jsonPath("$.items.length()").value(0));
+    }
+
+    @Test
     void lostGithubAccessHidesStoredPullRequests() throws Exception {
         stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
         sync().andExpect(status().isOk());
