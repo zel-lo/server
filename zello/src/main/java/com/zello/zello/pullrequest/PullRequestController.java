@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/projects/{projectId}/pull-requests")
 public class PullRequestController {
+    private final com.zello.zello.issue.IssuePullRequestService links;
     private final PullRequestService service;
     private final PullRequestPublishService publisher;
     private final GitHubOAuthRepositories oauth;
@@ -36,7 +37,8 @@ public class PullRequestController {
     private final GitHubTokenProvider tokens;
 
     public PullRequestController(PullRequestService service, PullRequestPublishService publisher, GitHubOAuthRepositories oauth,
-                                 GitHubPullRequests pulls, GitHubTokenProvider tokens) {
+                                 GitHubPullRequests pulls, GitHubTokenProvider tokens, com.zello.zello.issue.IssuePullRequestService links) {
+        this.links = links;
         this.service = service;
         this.publisher = publisher;
         this.oauth = oauth;
@@ -48,9 +50,10 @@ public class PullRequestController {
     ResponseEntity<PullRequestService.PullRequestPage> list(@PathVariable long projectId,
             @RequestParam(defaultValue = "all") String state, @RequestParam(required = false) String author,
             @RequestParam(required = false) String reviewer, @RequestParam(required = false) String review,
+            @RequestParam(defaultValue = "false") boolean unlinked,
             @RequestParam(required = false) Long repositoryId, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "30") int size,
             @AuthenticationPrincipal ZelloPrincipal principal, Authentication authentication, HttpServletRequest request) {
-        var filter = filter(state, author, reviewer, review);
+        var filter = filter(state, author, reviewer, review, unlinked);
         if (page < 1 || page > 1000 || size < 1 || size > 100) throw new ApiException(400, "INVALID_PAGE", "페이지 범위를 확인해 주세요.");
         var candidates = service.connectedRepositories(projectId, principal.userId()).stream()
                 .filter(repo -> repositoryId == null || repo.getId().equals(repositoryId)).toList();
@@ -156,8 +159,13 @@ public class PullRequestController {
         String token = tokens.oauthToken(authentication, request);
         var current = oauth.repository(token, repository.getGithubRepoId());
         var body = input.body() == null || input.body().isBlank() ? null : input.body().strip();
+        var issueIds = input.issueIds() == null ? List.<Long>of() : input.issueIds().stream().distinct().sorted().toList();
+        var selected = links.validate(projectId, repository.getId(), issueIds);
+        String references = selected.stream().filter(i -> i.getGithubNumber() != null)
+                .map(i -> "Closes #" + i.getGithubNumber()).collect(java.util.stream.Collectors.joining("\n"));
+        if (!references.isEmpty()) body = (body == null ? "" : body + "\n\n") + references;
         var draft = new PullRequestPublishService.Draft(input.title().strip(), input.teamSummary().strip(), body, input.headBranch(),
-                input.baseBranch(), input.draft(), input.requestKey());
+                input.baseBranch(), input.draft(), input.requestKey(), issueIds);
         var reservation = publisher.reserve(projectId, principal.userId(), repository.getId(), draft);
         if (reservation.published()) {
             var existing = service.find(projectId, principal.userId(), reservation.pullRequestId());
@@ -239,7 +247,7 @@ public class PullRequestController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new SyncResult(collected, skipped, Instant.now()));
     }
 
-    private PullRequestService.Filter filter(String state, String author, String reviewer, String review) {
+    private PullRequestService.Filter filter(String state, String author, String reviewer, String review, boolean unlinked) {
         if (author != null && !"me".equals(author)) throw new ApiException(400, "INVALID_AUTHOR_FILTER", "작성자 필터를 확인해 주세요.");
         if (reviewer != null && !"me".equals(reviewer)) throw new ApiException(400, "INVALID_REVIEWER_FILTER", "검토자 필터를 확인해 주세요.");
         if (author != null && reviewer != null) throw new ApiException(400, "INVALID_FILTER", "작성자와 검토자 필터는 함께 쓸 수 없어요.");
@@ -256,7 +264,7 @@ public class PullRequestController {
             case "changes_requested" -> PullRequest.ReviewDecision.CHANGES_REQUESTED;
             default -> throw new ApiException(400, "INVALID_REVIEW_FILTER", "검토 상태 필터를 확인해 주세요.");
         };
-        return new PullRequestService.Filter(states, "me".equals(author), "me".equals(reviewer), decision);
+        return new PullRequestService.Filter(states, "me".equals(author), "me".equals(reviewer), decision, unlinked);
     }
 
     public record SyncResult(int collected, int skippedRepositories, Instant syncedAt) { }
@@ -266,7 +274,8 @@ public class PullRequestController {
                                     @NotBlank @Size(max = 255) @Pattern(regexp = "\\S+") String baseBranch,
                                     @NotBlank @Size(max = 10000) String teamSummary, @Size(max = 60000) String body, boolean draft,
                                     @NotBlank @Pattern(regexp = "[A-Za-z0-9-]{8,64}") String requestKey,
-                                    @Size(max = 15) List<@NotBlank @Pattern(regexp = "[A-Za-z0-9-]{1,39}") String> reviewers) { }
+                                    @Size(max = 15) List<@NotBlank @Pattern(regexp = "[A-Za-z0-9-]{1,39}") String> reviewers,
+                                    @Size(max = 50) List<@NotNull @Positive Long> issueIds) { }
 
     public record UpdatePullRequest(@Size(max = 10000) String teamSummary, @NotNull Long version) { }
 

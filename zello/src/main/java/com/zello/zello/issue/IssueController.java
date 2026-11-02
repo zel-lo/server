@@ -16,12 +16,14 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/projects/{projectId}")
 public class IssueController {
+    private final IssuePullRequestService links;
     private final IssueService service;
     private final GitHubIssues github;
     private final GitHubOAuthRepositories repositories;
     private final GitHubTokenProvider tokens;
     private final IssueSyncService syncs;
-    public IssueController(IssueService service,GitHubIssues github,GitHubOAuthRepositories repositories,GitHubTokenProvider tokens,IssueSyncService syncs) {
+    public IssueController(IssueService service,GitHubIssues github,GitHubOAuthRepositories repositories,GitHubTokenProvider tokens,IssueSyncService syncs,IssuePullRequestService links) {
+        this.links=links;
         this.service=service;this.github=github;this.repositories=repositories;this.tokens=tokens;this.syncs=syncs;
     }
     @GetMapping("/issues")
@@ -41,6 +43,24 @@ public class IssueController {
         }
         return ok(service.list(projectId,user.userId(),visible,archived,activeOnly,status,mine,query.strip(),page,size,week,repositoryId,assignee));
     }
+    @PostMapping("/issues/{id}/pull-requests/{pullId}")
+    ResponseEntity<IssueService.View> link(@PathVariable long projectId, @PathVariable long id, @PathVariable long pullId,
+            @RequestParam long version, @AuthenticationPrincipal ZelloPrincipal user, Authentication auth, HttpServletRequest request) {
+        return changeLink(projectId, id, pullId, version, user, auth, request, true);
+    }
+    @DeleteMapping("/issues/{id}/pull-requests/{pullId}")
+    ResponseEntity<IssueService.View> unlink(@PathVariable long projectId, @PathVariable long id, @PathVariable long pullId,
+            @RequestParam long version, @AuthenticationPrincipal ZelloPrincipal user, Authentication auth, HttpServletRequest request) {
+        return changeLink(projectId, id, pullId, version, user, auth, request, false);
+    }
+    private ResponseEntity<IssueService.View> changeLink(long projectId, long id, long pullId, long version,
+            ZelloPrincipal user, Authentication auth, HttpServletRequest request, boolean linked) {
+        var issue = service.find(projectId, user.userId(), id, true);
+        repositories.repository(tokens.oauthToken(auth, request), issue.getRepository().getGithubRepoId());
+        links.change(projectId, user.userId(), id, pullId, version, linked);
+        return ok(service.view(service.find(projectId, user.userId(), id, false)));
+    }
+
     @GetMapping("/issues/{id}")
     ResponseEntity<IssueService.View> detail(@PathVariable long projectId,@PathVariable long id,@AuthenticationPrincipal ZelloPrincipal user,
             Authentication auth,HttpServletRequest request) {

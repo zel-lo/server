@@ -255,6 +255,7 @@ CREATE TABLE issues (
     board_order BIGINT NOT NULL DEFAULT 0,
     planned_week_start DATE NOT NULL,
     completed_at DATETIME(6) NULL,
+    status_before_pr VARCHAR(20) NULL,
     repository_id BIGINT NOT NULL,
     author_account_id BIGINT NULL,
     assignee_account_id BIGINT NULL,

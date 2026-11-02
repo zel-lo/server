@@ -36,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly = true)
 public class PullRequestService {
+    private final com.zello.zello.issue.IssuePullRequestService links;
     private final ProjectService projects;
     private final ProjectRepository projectRepository;
     private final GitRepositoryRepository repositories;
@@ -46,7 +47,8 @@ public class PullRequestService {
 
     public PullRequestService(ProjectService projects, ProjectRepository projectRepository, GitRepositoryRepository repositories,
                               PullRequestRepository pullRequests, GitHubAccountRepository accounts, UserRepository users,
-                              PullRequestReviewerRepository reviewers) {
+                              PullRequestReviewerRepository reviewers, com.zello.zello.issue.IssuePullRequestService links) {
+        this.links = links;
         this.projects = projects;
         this.projectRepository = projectRepository;
         this.repositories = repositories;
@@ -77,10 +79,10 @@ public class PullRequestService {
         }
         var requested = PullRequestReviewer.RequestStatus.REQUESTED;
         var result = pullRequests.search(projectId, repositoryIds, states, authorAccountId, reviewerAccountId, requested,
-                filter.review(), PageRequest.of(page - 1, size));
+                filter.review(), filter.unlinked(), PageRequest.of(page - 1, size));
         var reviewersByPull = reviewersOf(result.getContent().stream().map(PullRequest::getId).toList());
         return new PullRequestPage(result.getContent().stream()
-                .map(pull -> PullRequestView.from(pull, null, reviewersByPull.getOrDefault(pull.getId(), List.of()))).toList(),
+                .map(pull -> PullRequestView.from(pull, null, reviewersByPull.getOrDefault(pull.getId(), List.of())).withIssues(links.issuesFor(pull.getId()))).toList(),
                 page, result.hasNext(), result.getTotalElements(), filter.reviewing() ? new Counts(result.getTotalElements(), 0, 0)
                         : counts(projectId, repositoryIds, authorAccountId));
     }
@@ -100,7 +102,7 @@ public class PullRequestService {
     }
 
     public PullRequestView detail(PullRequest pull) {
-        return PullRequestView.from(pull, pull.getBody(), reviewersOf(List.of(pull.getId())).getOrDefault(pull.getId(), List.of()));
+        return PullRequestView.from(pull, pull.getBody(), reviewersOf(List.of(pull.getId())).getOrDefault(pull.getId(), List.of())).withIssues(links.issuesFor(pull.getId()));
     }
 
     /** 상세 화면용. GitHub에서 방금 받은 병합 상태로 리뷰·병합 버튼을 쓸 수 있는지 함께 담는다. */
@@ -129,8 +131,11 @@ public class PullRequestService {
     /** 병합은 됐는데 GitHub에서 다시 읽지 못한 경우, 병합된 것으로만 먼저 기록한다. */
     @Transactional
     public void markMerged(long pullRequestId, String mergeCommitSha) {
+        var existing = pullRequests.findById(pullRequestId).orElseThrow();
+        projectRepository.findLockedById(existing.getRepository().getProjectId()).orElseThrow(ProjectService::notFound);
         pullRequests.findById(pullRequestId).filter(pull -> pull.getState() == PullRequest.State.OPEN).ifPresent(pull -> {
             pull.markMerged(EntitySupport.now(), mergeCommitSha);
+            links.recalculateForPull(pullRequestId);
             pullRequests.flush();
         });
     }
@@ -269,6 +274,7 @@ public class PullRequestService {
                         utc(remote.createdAt()), utc(remote.closedAt()), utc(remote.mergedAt()), utc(remote.updatedAt()), now);
                 target = current;
             }
+            links.recalculateForPull(target.getId());
             // 리뷰 목록을 읽지 않은 닫힌 PR은 기존 기록을 지우지 않는다.
             syncReviewers(target, remote.requestedReviewers(), item.reviewed(), target.getState() == PullRequest.State.OPEN || item.reviewsFetched(),
                     storedReviewers.computeIfAbsent(target.getId(), id -> new HashMap<>()), authors, now);
@@ -333,7 +339,7 @@ public class PullRequestService {
     private static LocalDateTime utc(Instant instant) { return instant == null ? null : LocalDateTime.ofInstant(instant, ZoneOffset.UTC); }
 
     /** review는 검토 상태 필터(검토 대기·수정 요청). 지정하면 초안이 아닌 PR만 대상이다. */
-    public record Filter(EnumSet<PullRequest.State> states, boolean mine, boolean reviewing, PullRequest.ReviewDecision review) { }
+    public record Filter(EnumSet<PullRequest.State> states, boolean mine, boolean reviewing, PullRequest.ReviewDecision review, boolean unlinked) { }
 
     public record Counts(long open, long merged, long closed) { }
 
@@ -361,7 +367,8 @@ public class PullRequestService {
                                   Instant openedAt, Instant mergedAt, Instant githubUpdatedAt,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) String body,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) String warning,
-                                  @JsonInclude(JsonInclude.Include.NON_NULL) Actions actions) {
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) Actions actions,
+                                  List<com.zello.zello.issue.IssuePullRequestService.LinkedIssue> linkedIssues) {
         static PullRequestView from(PullRequest pull, String body, List<Reviewer> reviewers) {
             var repo = pull.getRepository();
             var author = pull.getAuthorAccount();
@@ -369,19 +376,25 @@ public class PullRequestService {
                     pull.getGithubNumber(), pull.getGithubUrl(), pull.getTitle(), pull.getHeadBranch(), pull.getBaseBranch(),
                     pull.getState().name(), pull.getDraft(), pull.getReviewDecision().name(), pull.getTeamSummary(),
                     author == null ? null : new Author(author.getLogin(), author.getAvatarUrl()), reviewers, pull.getVersion(),
-                    pull.getChangedFiles(), pull.getAdditions(), pull.getDeletions(), instant(pull.getOpenedAt()), instant(pull.getMergedAt()), instant(pull.getGithubUpdatedAt()), body, null, null);
+                    pull.getChangedFiles(), pull.getAdditions(), pull.getDeletions(), instant(pull.getOpenedAt()), instant(pull.getMergedAt()), instant(pull.getGithubUpdatedAt()), body, null, null, List.of());
         }
 
         public PullRequestView withWarning(String warning) {
             return new PullRequestView(id, repositoryId, repositoryOwner, repositoryName, number, url, title, headBranch, baseBranch, state,
                     draft, reviewDecision, teamSummary, author, reviewers, version, changedFiles, additions, deletions, openedAt, mergedAt,
-                    githubUpdatedAt, body, warning, actions);
+                    githubUpdatedAt, body, warning, actions, linkedIssues);
         }
 
         PullRequestView withActions(Actions actions) {
             return new PullRequestView(id, repositoryId, repositoryOwner, repositoryName, number, url, title, headBranch, baseBranch, state,
                     draft, reviewDecision, teamSummary, author, reviewers, version, changedFiles, additions, deletions, openedAt, mergedAt,
-                    githubUpdatedAt, body, warning, actions);
+                    githubUpdatedAt, body, warning, actions, linkedIssues);
+        }
+
+        PullRequestView withIssues(List<com.zello.zello.issue.IssuePullRequestService.LinkedIssue> linkedIssues) {
+            return new PullRequestView(id, repositoryId, repositoryOwner, repositoryName, number, url, title, headBranch, baseBranch, state,
+                    draft, reviewDecision, teamSummary, author, reviewers, version, changedFiles, additions, deletions, openedAt, mergedAt,
+                    githubUpdatedAt, body, warning, actions, linkedIssues);
         }
 
         private static Instant instant(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC); }

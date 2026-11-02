@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class PullRequestPublishService {
     /** 발행 중 상태가 이 시간을 넘으면 중단된 요청으로 보고 다시 시도할 수 있게 한다. */
     private static final long STALE_SECONDS = 120;
+    private final com.zello.zello.issue.IssuePullRequestService links;
     private final ProjectService projects;
     private final ProjectRepository projectRepository;
     private final GitRepositoryRepository repositories;
@@ -34,7 +35,8 @@ public class PullRequestPublishService {
     private final UserRepository users;
 
     public PullRequestPublishService(ProjectService projects, ProjectRepository projectRepository, GitRepositoryRepository repositories,
-                                     PullRequestRepository pullRequests, UserRepository users) {
+                                     PullRequestRepository pullRequests, UserRepository users, com.zello.zello.issue.IssuePullRequestService links) {
+        this.links = links;
         this.projects = projects;
         this.projectRepository = projectRepository;
         this.repositories = repositories;
@@ -52,6 +54,7 @@ public class PullRequestPublishService {
         projectRepository.findLockedById(projectId).orElseThrow(ProjectService::notFound);
         projects.requireWriter(projectId, userId);
         var repository = connected(projectId, repositoryId);
+        var selected = links.validate(projectId, repositoryId, draft.issueIds());
         var now = EntitySupport.now();
         var rows = pullRequests.findByRepositoryId(repositoryId);
         var replay = pullRequests.findByPublishRequestKey(draft.requestKey());
@@ -61,7 +64,9 @@ public class PullRequestPublishService {
             boolean sameRequest = row.getRepositoryId().equals(repositoryId) && Long.valueOf(userId).equals(row.getCreatedByUserId())
                     && row.getTitle().equals(draft.title()) && Objects.equals(draft.body(), row.getBody())
                     && Objects.equals(draft.teamSummary(), row.getTeamSummary()) && row.getHeadBranch().equals(draft.headBranch())
-                    && row.getBaseBranch().equals(draft.baseBranch()) && row.getDraft() == draft.draft();
+                    && row.getBaseBranch().equals(draft.baseBranch()) && row.getDraft() == draft.draft()
+                    && links.issuesFor(row.getId()).stream().map(i -> Long.valueOf(i.id())).collect(java.util.stream.Collectors.toSet())
+                        .equals(new java.util.HashSet<>(draft.issueIds()));
             if (!sameRequest) {
                 throw new ApiException(409, "REQUEST_KEY_CONFLICT", "이미 다른 요청에 사용한 요청 키입니다.");
             }
@@ -81,6 +86,7 @@ public class PullRequestPublishService {
                 .title(draft.title()).body(draft.body()).teamSummary(draft.teamSummary()).headBranch(draft.headBranch()).baseBranch(draft.baseBranch())
                 .state(PullRequest.State.OPEN).draft(draft.draft()).publishStatus(PublishStatus.PENDING)
                 .publishRequestKey(draft.requestKey()).lastFetchedAt(now).build());
+        links.attach(saved, selected, userId);
         return new Reservation(saved.getId(), false, false);
     }
 
@@ -95,12 +101,14 @@ public class PullRequestPublishService {
                 .findFirst();
         if (collected.isPresent()) {
             collected.get().updateTeamSummary(row.getTeamSummary());
+            links.transfer(row.getId(), collected.get());
             pullRequests.delete(row);
             pullRequests.flush();
             return pullRequests.findDetail(collected.get().getId(), projectId).orElseThrow();
         }
         row.markPublished(remote.id(), remote.number(), remote.htmlUrl(), remote.head().sha(), remote.draft(),
                 utc(remote.createdAt()), utc(remote.updatedAt()), now);
+        links.recalculateForPull(row.getId());
         pullRequests.flush();
         return pullRequests.findDetail(row.getId(), projectId).orElseThrow();
     }
@@ -130,7 +138,7 @@ public class PullRequestPublishService {
     private static LocalDateTime utc(Instant instant) { return instant == null ? null : LocalDateTime.ofInstant(instant, ZoneOffset.UTC); }
 
     /** teamSummary는 zello에만, body는 GitHub PR 본문으로 들어간다. body는 비어 있으면 null. */
-    public record Draft(String title, String teamSummary, String body, String headBranch, String baseBranch, boolean draft, String requestKey) { }
+    public record Draft(String title, String teamSummary, String body, String headBranch, String baseBranch, boolean draft, String requestKey, java.util.List<Long> issueIds) { }
 
     /** published면 같은 요청 키로 이미 끝난 요청이고, retry면 결과 불명·실패 상태에서의 재시도다. */
     public record Reservation(Long pullRequestId, boolean retry, boolean published) { }

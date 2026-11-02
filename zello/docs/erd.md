@@ -561,3 +561,5 @@ UNIQUE 및 FK 인덱스 외에 실제 조회 조건에 맞춰 다음을 추가�
 - 이 검사는 MySQL 전용 테이블 옵션·타임스탬프·인덱스·자동 증가 표기를 SQLite에 맞게 바꾸어 **관계·CHECK 논리**를 확인한다. MySQL 엔진에서의 실행 검증과 API 권한·이벤트 순서 처리 검증을 대신하지 않는다. 실제 MySQL 적용 전에는 별도의 빈 스키마에서 DDL 생성과 무결성 검증을 수행해야 한다.
 
 OAuth 전환: repositories의 authorization_method/installation_id 조합 CHECK를 포함하여 현재 업무 스키마는 49개 CHECK를 갖는다. 운영 적용은 V3 마이그레이션으로 수행한다.
+
+이슈와 PR 연결 단계(V10)는 `issues.status_before_pr`(nullable VARCHAR(20))로 PR 자동 상태를 적용하기 전의 계획 상태를 보존한다. 자세한 API와 상태 규칙은 [이슈와 PR 연결](../ISSUE_PR_LINKS.md)을 참고한다.

@@ -25,11 +25,12 @@ public interface PullRequestRepository extends JpaRepository<PullRequest, Long> 
                     select 1 from PullRequestReviewer r where r.id.pullRequestId = p.id
                       and r.id.reviewerAccountId = :reviewerAccountId and r.requestStatus = :requested)))
               and (:review is null or (p.draft = false and p.reviewDecision = :review))
+              and (:unlinked=false or not exists (select 1 from IssuePullRequest link where link.id.pullRequestId=p.id))
             order by p.githubUpdatedAt desc, p.id desc
             """)
     Page<PullRequest> search(Long projectId, Collection<Long> repositoryIds, Collection<PullRequest.State> states,
                              Long authorAccountId, Long reviewerAccountId, PullRequestReviewer.RequestStatus requested,
-                             PullRequest.ReviewDecision review, Pageable pageable);
+                             PullRequest.ReviewDecision review, boolean unlinked, Pageable pageable);
 
     @EntityGraph(attributePaths = {"repository", "authorAccount"})
     @Query("""

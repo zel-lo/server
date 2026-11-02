@@ -206,6 +206,26 @@ public class Issue extends VersionedEntity {
     @Column(name = "completed_at", columnDefinition = "datetime(6)")
     private LocalDateTime completedAt;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status_before_pr", length = 20)
+    private WorkStatus statusBeforePr;
+
+    public void applyPullRequestStatus(WorkStatus derived, LocalDateTime mergedAt) {
+        if (derived == null) {
+            if (statusBeforePr != null) {
+                workStatus = githubState == GithubState.CLOSED ? WorkStatus.DONE : statusBeforePr;
+                statusBeforePr = null;
+                if (workStatus != WorkStatus.DONE) completedAt = null;
+            }
+            return;
+        }
+        if (statusBeforePr == null) statusBeforePr = workStatus;
+        workStatus = githubState == GithubState.CLOSED || statusBeforePr == WorkStatus.DONE ? WorkStatus.DONE : derived;
+        if (workStatus == WorkStatus.DONE && githubState != GithubState.CLOSED && statusBeforePr != WorkStatus.DONE && mergedAt != null) completedAt = mergedAt;
+        if (workStatus == WorkStatus.DONE && completedAt == null) completedAt = EntitySupport.now();
+        if (workStatus != WorkStatus.DONE) completedAt = null;
+    }
+
     public void recordGithubCompletion(LocalDateTime closedAt) {
         if(this.githubState==GithubState.CLOSED && closedAt!=null) this.completedAt=closedAt;
     }
@@ -231,6 +251,7 @@ public class Issue extends VersionedEntity {
     public void plan(WorkStatus status, Priority priority, SourceType source, LocalDate date, String context, String criteria) {
         if (status == WorkStatus.DONE && this.completedAt == null) this.completedAt = EntitySupport.now();
         if (status != WorkStatus.DONE) this.completedAt = null;
+        if (statusBeforePr != null && status != this.workStatus) statusBeforePr = status;
         this.workStatus = status;
         this.priority = priority;
         this.sourceType = source;
@@ -261,6 +282,7 @@ public class Issue extends VersionedEntity {
         }
         else if (this.githubState == GithubState.CLOSED && this.workStatus == WorkStatus.DONE) {
             this.workStatus = WorkStatus.TODO;
+            if (statusBeforePr != null) statusBeforePr = WorkStatus.TODO;
             this.completedAt = null;
         }
         this.githubState = state;

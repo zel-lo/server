@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly=true)
 public class IssueService {
+    private final IssuePullRequestService links;
     private final ProjectService projects;
     private final ProjectRepository projectRows;
     private final GitRepositoryRepository repositories;
@@ -35,7 +36,8 @@ public class IssueService {
     private static final Pattern MARKER = Pattern.compile("\\n?<!-- zello:issue:([A-Za-z0-9-]{16,64}) -->");
     public IssueService(ProjectService projects, ProjectRepository projectRows, GitRepositoryRepository repositories,
                         IssueRepository issues, UserRepository users, GitHubAccountRepository accounts,
-                        ProjectMemberRepository members,ActivityRepository activities,NotificationRepository notifications) {
+                        ProjectMemberRepository members,ActivityRepository activities,NotificationRepository notifications, IssuePullRequestService links) {
+        this.links=links;
         this.projects=projects; this.projectRows=projectRows; this.repositories=repositories;
         this.issues=issues; this.users=users; this.accounts=accounts;
         this.members=members;this.activities=activities;this.notifications=notifications;
@@ -59,7 +61,7 @@ public class IssueService {
         return new View(i.getId().toString(),i.getVersion(),i.getIssueKey(),repo.getId().toString(),repo.getOwnerLogin(),repo.getName(),
                 i.getGithubNumber(),i.getGithubUrl(),i.getTitle(),i.getDescription(),i.getWorkStatus(),i.getPriority(),i.getSourceType(),
                 i.getMeetingDate(),i.getMeetingContext(),i.getAcceptanceCriteria(),i.getGithubState(),
-                i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError(),i.getBoardOrder(),i.getPlannedWeekStart(),i.getCompletedAt());
+                i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError(),i.getBoardOrder(),i.getPlannedWeekStart(),i.getCompletedAt(),links.pullsFor(i.getId()));
     }
     public Page list(long projectId,long userId,List<Long> visible,boolean archived,boolean activeOnly,Issue.WorkStatus status,boolean mine,String query,int page,int size,LocalDate week,Long repositoryFilter,String assigneeFilter) {
         var project=projects.requireMember(projectId,userId,false);
@@ -178,6 +180,7 @@ public class IssueService {
         }
         var d=input.details(); row.plan(row.getGithubState()==Issue.GithubState.CLOSED ? Issue.WorkStatus.DONE : d.status(),d.priority(),d.source(),d.meetingDate(),d.meetingContext(),d.acceptanceCriteria());
         row.schedule(d.plannedWeekStart());
+        links.recalculate(id);
         if(input.placement()!=null) place(projectId,row,input.placement());
         issues.flush();notifyAssignment(projectId,userId,row,before);return view(row);
     }
@@ -250,6 +253,7 @@ public class IssueService {
                 "open".equals(remote.state()) ? Issue.GithubState.OPEN : Issue.GithubState.CLOSED,
                 remote.user()==null ? null : account(remote.user()),assignee,utc(remote.updatedAt()),EntitySupport.now());
         row.recordGithubCompletion(remote.closedAt()==null ? null : utc(remote.closedAt()));
+        links.recalculate(row.getId());
     }
     private GitHubAccount account(GitHubIssues.Person p) {
         var type="Bot".equals(p.type()) ? GitHubAccount.AccountType.BOT : GitHubAccount.AccountType.USER;
@@ -286,5 +290,5 @@ public class IssueService {
     public record Page(List<View> items,int page,boolean hasNext,long total) { }
     public record View(String id,Long version,String key,String repositoryId,String repositoryOwner,String repositoryName,
             Integer number,String url,String title,String description,Issue.WorkStatus status,Issue.Priority priority,Issue.SourceType source,
-            LocalDate meetingDate,String meetingContext,String acceptanceCriteria,Issue.GithubState githubState,String assignee,boolean archived,PublishStatus publishStatus,String lastPublishError,long boardOrder,LocalDate plannedWeekStart,LocalDateTime completedAt) { }
+            LocalDate meetingDate,String meetingContext,String acceptanceCriteria,Issue.GithubState githubState,String assignee,boolean archived,PublishStatus publishStatus,String lastPublishError,long boardOrder,LocalDate plannedWeekStart,LocalDateTime completedAt,List<IssuePullRequestService.LinkedPullRequest> pullRequests) { }
 }

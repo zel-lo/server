@@ -449,6 +449,13 @@ class PullRequestApiTests {
         list("?repositoryId=" + webDbId).andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].repositoryName").value("web")).andExpect(jsonPath("$.counts.open").value(1));
         list("?repositoryId=" + repositoryDbId + "&author=me").andExpect(jsonPath("$.counts.open").value(2));
+        var issue = localIssue();
+        linkIssue(issue.id(), idOf(1), issue.version(), true).andExpect(status().isOk());
+        list("?repositoryId=" + repositoryDbId + "&unlinked=true")
+                .andExpect(jsonPath("$.total").value(1)).andExpect(jsonPath("$.items[0].number").value(2))
+                .andExpect(jsonPath("$.counts.open").value(2));
+        list("?repositoryId=" + webDbId + "&unlinked=true")
+                .andExpect(jsonPath("$.total").value(1)).andExpect(jsonPath("$.items[0].repositoryName").value("web"));
         // 다른 프로젝트나 없는 저장소를 고르면 아무것도 보여주지 않는다.
         list("?repositoryId=999999999").andExpect(jsonPath("$.items.length()").value(0));
     }
@@ -631,6 +638,160 @@ class PullRequestApiTests {
         mvc.perform(get(base("/pull-requests/999999999")).with(as(owner))).andExpect(status().isNotFound());
         when(github.repository(anyString(), eq(repoId))).thenThrow(new ApiException(404, "GITHUB_RESOURCE_NOT_FOUND", "접근할 수 없습니다."));
         mvc.perform(get(base("/pull-requests/" + id)).with(as(owner))).andExpect(status().isNotFound());
+    }
+
+    @Autowired com.zello.zello.issue.IssueService issueService;
+    @Autowired com.zello.zello.issue.IssuePullRequestService issueLinks;
+    @Autowired com.zello.zello.domain.issue.IssueRepository issueRows;
+
+    @Test
+    void selectedIssuesAreReservedWithThePullAndPublishedWithClosingReferences() throws Exception {
+        var issue = localIssue();
+        // A published GitHub issue gets a closing reference; local-only issues can also be linked.
+        var remoteIssue = new GitHubIssues.Remote(repoId * 1000, 23, "https://github.com/team/server/issues/23", "작업", "설명", "open",
+                new GitHubIssues.Person(ownerGithubId, "owner", "User", null), List.of(), Instant.now(), null, List.of());
+        issueService.publish(projectId, owner.userId(), Long.parseLong(issue.id()), remoteIssue);
+        when(pulls.create(anyString(), anyString(), anyString(), any())).thenReturn(remote(9, "feat/new", "main"));
+        var json = createWith("linked-pr-key-0001", "\"body\":\"구현 설명\",\"issueIds\":[\"" + issue.id() + "\"]")
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.linkedIssues[0].id").value(issue.id()))
+                .andReturn().getResponse().getContentAsString();
+        String pullId = JsonPath.read(json, "$.id");
+        var sent = org.mockito.ArgumentCaptor.forClass(GitHubPullRequests.NewPull.class);
+        verify(pulls).create(anyString(), anyString(), anyString(), sent.capture());
+        assertThat(sent.getValue().body()).isEqualTo("구현 설명\n\nCloses #23");
+        issueDetail(issue.id()).andExpect(jsonPath("$.pullRequests[0].id").value(pullId))
+                .andExpect(jsonPath("$.status").value("IN_REVIEW"));
+        list("?unlinked=true").andExpect(jsonPath("$.total").value(0));
+        createWith("linked-pr-key-0001", "\"body\":\"구현 설명\",\"issueIds\":[\"" + issue.id() + "\"]")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(pullId));
+        verify(pulls, times(1)).create(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void manualLinksAreIdempotentAndFollowDraftReviewMergeAndUnlink() throws Exception {
+        var issue = localIssue();
+        stubFetch(fetched(1, 1, ownerGithubId, "open", true, null, PullRequest.ReviewDecision.UNKNOWN));
+        sync().andExpect(status().isOk());
+        String pullId = idOf(1);
+        linkIssue(issue.id(), pullId, issue.version(), true).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        linkIssue(issue.id(), pullId, issue.version(), true).andExpect(status().isOk());
+        detail(pullId).andExpect(jsonPath("$.linkedIssues.length()").value(1));
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        issueDetail(issue.id()).andExpect(jsonPath("$.status").value("IN_REVIEW"));
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.CHANGES_REQUESTED));
+        sync().andExpect(status().isOk());
+        issueDetail(issue.id()).andExpect(jsonPath("$.status").value("IN_PROGRESS"));
+        stubFetch(fetched(1, 1, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.APPROVED));
+        sync().andExpect(status().isOk());
+        issueDetail(issue.id()).andExpect(jsonPath("$.status").value("DONE"))
+                .andExpect(jsonPath("$.completedAt").value("2026-10-30T02:00:00"));
+        linkIssue(issue.id(), pullId, issueVersion(issue.id()), false).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("TODO")).andExpect(jsonPath("$.completedAt").isEmpty());
+        list("?unlinked=true").andExpect(jsonPath("$.total").value(1));
+    }
+
+    @Test
+    void multiplePullRequestsWaitForOpenWorkAndClosedUnmergedPullRestoresThePlan() throws Exception {
+        var issue = localIssue();
+        stubFetch(fetched(1, 1, ownerGithubId, "closed", false, Instant.parse("2026-10-30T02:00:00Z"), PullRequest.ReviewDecision.APPROVED),
+                fetched(2, 2, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        linkIssue(issue.id(), idOf(1), issueVersion(issue.id()), true).andExpect(status().isOk());
+        linkIssue(issue.id(), idOf(2), issueVersion(issue.id()), true).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("IN_REVIEW")).andExpect(jsonPath("$.completedAt").isEmpty());
+        linkIssue(issue.id(), idOf(1), issueVersion(issue.id()), false).andExpect(status().isOk());
+        stubFetch(fetched(2, 2, ownerGithubId, "closed", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        issueDetail(issue.id()).andExpect(jsonPath("$.status").value("TODO"));
+    }
+
+    @Test
+    void linkRequiresWriterCsrfRepositoryAccessAndCurrentIssueVersion() throws Exception {
+        var issue = localIssue();
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING),
+                fetched(2, 2, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        String path = base("/issues/" + issue.id() + "/pull-requests/" + idOf(1)) + "?version=" + issue.version();
+        mvc.perform(post(path).with(as(owner))).andExpect(status().isForbidden());
+        var viewer = login.login(new GitHubProfile(IDS.incrementAndGet(), "link-viewer", null, null, null));
+        members.saveAndFlush(ProjectMember.builder().project(projects.findById(projectId).orElseThrow())
+                .user(users.findById(viewer.userId()).orElseThrow()).role(ProjectMember.Role.VIEWER).build());
+        mvc.perform(post(path).with(as(viewer)).with(csrf())).andExpect(status().isForbidden());
+        linkIssue(issue.id(), idOf(1), issue.version(), true).andExpect(status().isOk());
+        linkIssue(issue.id(), idOf(2), issue.version(), true).andExpect(status().isConflict());
+        assertThat(issueVersion(issue.id())).isGreaterThan(issue.version());
+        // Same derived state still increments the version for stale editors.
+        long before = issueVersion(issue.id());
+        linkIssue(issue.id(), idOf(2), before, true).andExpect(status().isOk());
+        assertThat(issueVersion(issue.id())).isGreaterThan(before);
+        String firstPullId = idOf(1);
+        when(github.repository(anyString(), eq(repoId))).thenThrow(new ApiException(404, "GITHUB_RESOURCE_NOT_FOUND", "접근 취소"));
+        linkIssue(issue.id(), firstPullId, issueVersion(issue.id()), false).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void invalidOrArchivedIssueSelectionFailsBeforeCreatingAGithubPullRequest() throws Exception {
+        var issue = localIssue();
+        issueService.archive(projectId, owner.userId(), Long.parseLong(issue.id()), issue.version(), true);
+        createWith("linked-pr-key-0003", "\"issueIds\":[\"" + issue.id() + "\"]").andExpect(status().isBadRequest());
+        createWith("linked-pr-key-0004", "\"issueIds\":[\"999999999\"]").andExpect(status().isBadRequest());
+        verify(pulls, never()).create(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void anUnknownCreationRetainsSelectedIssuesForTheRetry() throws Exception {
+        var issue = localIssue();
+        when(pulls.create(anyString(), anyString(), anyString(), any()))
+                .thenThrow(new ApiException(502, "GITHUB_RESULT_UNKNOWN", "응답을 받지 못했어요."))
+                .thenReturn(remote(9, "feat/new", "main"));
+        String selected = "\"issueIds\":[\"" + issue.id() + "\"]";
+        createWith("linked-pr-key-0005", selected).andExpect(status().isBadGateway());
+        issueDetail(issue.id()).andExpect(jsonPath("$.status").value("TODO"))
+                .andExpect(jsonPath("$.pullRequests.length()").value(0));
+        createWith("linked-pr-key-0005", selected).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.linkedIssues[0].id").value(issue.id()));
+        issueDetail(issue.id()).andExpect(jsonPath("$.pullRequests.length()").value(1))
+                .andExpect(jsonPath("$.status").value("IN_REVIEW"));
+    }
+
+    @Test
+    void issuesFromAnotherRepositoryCannotBeSelectedOrLinked() throws Exception {
+        var issue = localIssue();
+        stubFetch(fetched(1, 1, ownerGithubId, "open", false, null, PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        String firstPullId = idOf(1);
+        long otherSource = IDS.incrementAndGet();
+        when(github.repository(anyString(), eq(otherSource))).thenReturn(new GitHubGateway.RemoteRepository(otherSource,
+                new GitHubGateway.Owner(45, "team", "Organization", null), "client", "team/client", "https://github.com/team/client",
+                null, "TypeScript", "main", true, false));
+        var connected = mvc.perform(post(base("/repositories")).with(as(owner)).with(csrf()).contentType("application/json")
+                .content("{\"githubRepositoryId\":\"" + otherSource + "\"}")).andExpect(status().isCreated()).andReturn();
+        long otherRepo = Long.parseLong(JsonPath.read(connected.getResponse().getContentAsString(), "$.id"));
+        var otherIssue = localIssue(otherRepo);
+        linkIssue(otherIssue.id(), firstPullId, otherIssue.version(), true).andExpect(status().isNotFound());
+        long original = repositoryDbId;
+        repositoryDbId = otherRepo;
+        createWith("linked-pr-key-0006", "\"issueIds\":[\"" + issue.id() + "\"]").andExpect(status().isBadRequest());
+        repositoryDbId = original;
+        verify(pulls, never()).create(anyString(), anyString(), anyString(), any());
+    }
+
+    private com.zello.zello.issue.IssueService.View localIssue() {
+        return localIssue(repositoryDbId);
+    }
+    private com.zello.zello.issue.IssueService.View localIssue(long repositoryId) {
+        return issueService.createLocal(projectId, owner.userId(), new com.zello.zello.issue.IssueService.Create(repositoryId,
+                new com.zello.zello.issue.IssueService.Details("작업", "설명", com.zello.zello.domain.issue.Issue.WorkStatus.TODO,
+                        com.zello.zello.domain.issue.Issue.Priority.MEDIUM, com.zello.zello.domain.issue.Issue.SourceType.REQUEST,
+                        null, "", "", null, null), java.util.UUID.randomUUID().toString()));
+    }
+    private ResultActions issueDetail(String id) throws Exception { return mvc.perform(get(base("/issues/" + id)).with(as(owner))).andExpect(status().isOk()); }
+    private long issueVersion(String id) { return issueRows.findById(Long.parseLong(id)).orElseThrow().getVersion(); }
+    private ResultActions linkIssue(String issue, String pull, long version, boolean linked) throws Exception {
+        var path = base("/issues/" + issue + "/pull-requests/" + pull) + "?version=" + version;
+        return mvc.perform((linked ? post(path) : delete(path)).with(as(owner)).with(csrf()));
     }
 
     private void stubFetch(GitHubPullRequests.Fetched... items) {

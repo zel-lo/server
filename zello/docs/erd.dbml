@@ -247,6 +247,7 @@ Table "issues" {
   "creation_hash" VARCHAR(64)
   "board_order" BIGINT [not null, default: 0]
   "planned_week_start" DATE [not null]
+  "status_before_pr" VARCHAR(20)
   "completed_at" DATETIME(6)
   "repository_id" BIGINT [not null]
   "author_account_id" BIGINT
