@@ -275,6 +275,63 @@ class IssueApiTests {
         verifyNoInteractions(github);
     }
 
+    @MockitoBean GitHubBranches branches;
+    @Autowired IssueService issueService;
+
+    @Test void startsPublishedWorkFromTheCurrentDefaultBranchAndPreservesItOnReload() throws Exception {
+        String id=createId();
+        issueService.publish(projectId,owner.userId(),Long.parseLong(id),remote(7,"설명","open"));
+        long before=version(id);
+        mvc.perform(get(base("/issues/"+id+"/branch")).with(as(owner))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("feat/7")).andExpect(jsonPath("$.ready").value(false));
+        verifyNoInteractions(branches);
+        when(branches.ensure(eq("test-session-token"),eq("team"),eq("server"),eq("main"),eq("feat/7"))).thenAnswer(call -> {
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            return new GitHubBranches.Result("feat/7",true);
+        });
+        start(id,before,owner).andExpect(status().isOk()).andExpect(jsonPath("$.ready").value(true))
+                .andExpect(jsonPath("$.created").value(true)).andExpect(jsonPath("$.issue.status").value("IN_PROGRESS"))
+                .andExpect(jsonPath("$.commands").value("git fetch origin\ngit switch feat/7"));
+        detail(id).andExpect(jsonPath("$.workBranch").value("feat/7")).andExpect(jsonPath("$.workBranchBase").value("main"));
+        // Lost responses can be replayed with the old version once the same branch is attached.
+        when(branches.ensure(anyString(),anyString(),anyString(),anyString(),anyString())).thenReturn(new GitHubBranches.Result("feat/7",false));
+        start(id,before,owner).andExpect(status().isOk()).andExpect(jsonPath("$.created").value(false));
+        mvc.perform(get(base("/issues/"+id+"/branch")).with(as(owner))).andExpect(jsonPath("$.ready").value(true));
+    }
+    @Test void refusesLocalArchivedDoneAndStaleWorkBeforeCreatingABranch() throws Exception {
+        String id=createId();long before=version(id);
+        start(id,before,owner).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ISSUE_NOT_PUBLISHED"));
+        issueService.publish(projectId,owner.userId(),Long.parseLong(id),remote(7,"설명","open"));
+        start(id,before,owner).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ISSUE_CHANGED"));
+        issueService.archive(projectId,owner.userId(),Long.parseLong(id),version(id),true);
+        start(id,version(id),owner).andExpect(status().isConflict());
+        issueService.archive(projectId,owner.userId(),Long.parseLong(id),version(id),false);
+        issueService.publish(projectId,owner.userId(),Long.parseLong(id),remote(7,"설명","closed"));
+        start(id,version(id),owner).andExpect(status().isConflict());
+        verifyNoInteractions(branches);
+    }
+    @Test void branchCreationRequiresWriterCsrfAndCurrentGithubAccess() throws Exception {
+        String id=createId();issueService.publish(projectId,owner.userId(),Long.parseLong(id),remote(7,"설명","open"));
+        var viewer=member(ProjectMember.Role.VIEWER);
+        start(id,version(id),viewer).andExpect(status().isForbidden());
+        mvc.perform(post(base("/issues/"+id+"/branch")).with(as(owner)).contentType("application/json").content("{\"version\":"+version(id)+"}"))
+                .andExpect(status().isForbidden());
+        long latestVersion=version(id);
+        when(oauth.repository(anyString(),eq(sourceId))).thenThrow(new ApiException(404,"GITHUB_RESOURCE_NOT_FOUND","접근 취소"));
+        start(id,latestVersion,owner).andExpect(status().isNotFound());
+        verifyNoInteractions(branches);
+    }
+    @Test void aFailedBranchCreateDoesNotMoveTheIssueToInProgress() throws Exception {
+        String id=createId();issueService.publish(projectId,owner.userId(),Long.parseLong(id),remote(7,"설명","open"));
+        when(branches.ensure(anyString(),anyString(),anyString(),anyString(),anyString()))
+                .thenThrow(new ApiException(503,"GITHUB_BRANCH_RESULT_UNKNOWN","다시 확인해 주세요."));
+        start(id,version(id),owner).andExpect(status().isServiceUnavailable());
+        detail(id).andExpect(jsonPath("$.status").value("TODO")).andExpect(jsonPath("$.workBranch").isEmpty());
+    }
+    ResultActions start(String id,long version,ZelloPrincipal actor) throws Exception {
+        return mvc.perform(post(base("/issues/"+id+"/branch")).with(as(actor)).with(csrf()).contentType("application/json").content("{\"version\":"+version+"}"));
+    }
+
     ResultActions update(String id,long version,String details,String state) throws Exception {
         return mvc.perform(patch(base("/issues/"+id)).with(as(owner)).with(csrf()).contentType("application/json")
                 .content("{\"version\":"+version+",\"details\":"+details+",\"githubState\":\""+state+"\"}"));

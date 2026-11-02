@@ -248,6 +248,8 @@ Table "issues" {
   "board_order" BIGINT [not null, default: 0]
   "planned_week_start" DATE [not null]
   "status_before_pr" VARCHAR(20)
+  "work_branch" VARCHAR(255)
+  "work_branch_base" VARCHAR(255)
   "completed_at" DATETIME(6)
   "repository_id" BIGINT [not null]
   "author_account_id" BIGINT

@@ -61,7 +61,7 @@ public class IssueService {
         return new View(i.getId().toString(),i.getVersion(),i.getIssueKey(),repo.getId().toString(),repo.getOwnerLogin(),repo.getName(),
                 i.getGithubNumber(),i.getGithubUrl(),i.getTitle(),i.getDescription(),i.getWorkStatus(),i.getPriority(),i.getSourceType(),
                 i.getMeetingDate(),i.getMeetingContext(),i.getAcceptanceCriteria(),i.getGithubState(),
-                i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError(),i.getBoardOrder(),i.getPlannedWeekStart(),i.getCompletedAt(),links.pullsFor(i.getId()));
+                i.getAssigneeAccount()==null ? null : i.getAssigneeAccount().getLogin(),i.getArchivedAt()!=null,i.getPublishStatus(),i.getLastPublishError(),i.getBoardOrder(),i.getPlannedWeekStart(),i.getCompletedAt(),links.pullsFor(i.getId()),i.getWorkBranch(),i.getWorkBranchBase());
     }
     public Page list(long projectId,long userId,List<Long> visible,boolean archived,boolean activeOnly,Issue.WorkStatus status,boolean mine,String query,int page,int size,LocalDate week,Long repositoryFilter,String assigneeFilter) {
         var project=projects.requireMember(projectId,userId,false);
@@ -290,5 +290,5 @@ public class IssueService {
     public record Page(List<View> items,int page,boolean hasNext,long total) { }
     public record View(String id,Long version,String key,String repositoryId,String repositoryOwner,String repositoryName,
             Integer number,String url,String title,String description,Issue.WorkStatus status,Issue.Priority priority,Issue.SourceType source,
-            LocalDate meetingDate,String meetingContext,String acceptanceCriteria,Issue.GithubState githubState,String assignee,boolean archived,PublishStatus publishStatus,String lastPublishError,long boardOrder,LocalDate plannedWeekStart,LocalDateTime completedAt,List<IssuePullRequestService.LinkedPullRequest> pullRequests) { }
+            LocalDate meetingDate,String meetingContext,String acceptanceCriteria,Issue.GithubState githubState,String assignee,boolean archived,PublishStatus publishStatus,String lastPublishError,long boardOrder,LocalDate plannedWeekStart,LocalDateTime completedAt,List<IssuePullRequestService.LinkedPullRequest> pullRequests,String workBranch,String workBranchBase) { }
 }

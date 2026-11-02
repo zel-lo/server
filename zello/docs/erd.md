@@ -563,3 +563,5 @@ UNIQUE 및 FK 인덱스 외에 실제 조회 조건에 맞춰 다음을 추가�
 OAuth 전환: repositories의 authorization_method/installation_id 조합 CHECK를 포함하여 현재 업무 스키마는 49개 CHECK를 갖는다. 운영 적용은 V3 마이그레이션으로 수행한다.
 
 이슈와 PR 연결 단계(V10)는 `issues.status_before_pr`(nullable VARCHAR(20))로 PR 자동 상태를 적용하기 전의 계획 상태를 보존한다. 자세한 API와 상태 규칙은 [이슈와 PR 연결](../ISSUE_PR_LINKS.md)을 참고한다.
+
+작업 시작 단계(V11)는 `issues.work_branch`, `issues.work_branch_base`(각 nullable VARCHAR(255))에 확인된 작업 브랜치와 최초 선택 기준 브랜치를 보존한다. API와 상태 규칙은 [작업 브랜치](../WORK_BRANCHES.md)를 참고한다.

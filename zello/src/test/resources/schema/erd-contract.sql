@@ -256,6 +256,8 @@ CREATE TABLE issues (
     planned_week_start DATE NOT NULL,
     completed_at DATETIME(6) NULL,
     status_before_pr VARCHAR(20) NULL,
+    work_branch VARCHAR(255) NULL,
+    work_branch_base VARCHAR(255) NULL,
     repository_id BIGINT NOT NULL,
     author_account_id BIGINT NULL,
     assignee_account_id BIGINT NULL,

@@ -217,6 +217,10 @@ public class Issue extends VersionedEntity {
                 statusBeforePr = null;
                 if (workStatus != WorkStatus.DONE) completedAt = null;
             }
+            if (workBranch != null && (workStatus == WorkStatus.TODO || workStatus == WorkStatus.BACKLOG)) {
+                workStatus = WorkStatus.IN_PROGRESS;
+                completedAt = null;
+            }
             return;
         }
         if (statusBeforePr == null) statusBeforePr = workStatus;
@@ -224,6 +228,21 @@ public class Issue extends VersionedEntity {
         if (workStatus == WorkStatus.DONE && githubState != GithubState.CLOSED && statusBeforePr != WorkStatus.DONE && mergedAt != null) completedAt = mergedAt;
         if (workStatus == WorkStatus.DONE && completedAt == null) completedAt = EntitySupport.now();
         if (workStatus != WorkStatus.DONE) completedAt = null;
+    }
+
+    @Column(name = "work_branch", length = 255)
+    private String workBranch;
+
+    @Column(name = "work_branch_base", length = 255)
+    private String workBranchBase;
+
+    public void startWork(String branch, String base) {
+        this.workBranch = branch;
+        if (this.workBranchBase == null) this.workBranchBase = base;
+        if (workStatus == WorkStatus.TODO || workStatus == WorkStatus.BACKLOG) {
+            workStatus = WorkStatus.IN_PROGRESS;
+            completedAt = null;
+        }
     }
 
     public void recordGithubCompletion(LocalDateTime closedAt) {
