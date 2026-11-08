@@ -114,6 +114,7 @@ public class IssueController {
     ResponseEntity<IssueService.View> update(@PathVariable long projectId,@PathVariable long id,@Valid @RequestBody IssueService.Update input,
             @AuthenticationPrincipal ZelloPrincipal user,Authentication auth,HttpServletRequest request) {
         var row=service.find(projectId,user.userId(),id,true);service.version(row,input.version());service.validatePlan(projectId,user.userId(),input.details());
+        service.validateCompletionTitle(row,input);
         var target=service.validatePlacement(projectId,user.userId(),id,input.details().status(),input.placement());
         if(!Objects.equals(row.getAssigneeAccount()==null ? null : row.getAssigneeAccount().getLogin(),input.details().assignee()))
             service.validateAssignee(projectId,input.details().assignee());

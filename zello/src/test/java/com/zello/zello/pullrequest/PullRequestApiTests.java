@@ -704,6 +704,44 @@ class PullRequestApiTests {
         list("?unlinked=true").andExpect(jsonPath("$.total").value(1));
     }
 
+    @Test
+    void completingFirstThenMergingEnrichesOneChangeAndPreservesEditedNoteText() throws Exception {
+        var issue=localIssue();
+        stubFetch(fetched(1,1,ownerGithubId,"open",false,null,PullRequest.ReviewDecision.PENDING));sync().andExpect(status().isOk());
+        linkIssue(issue.id(),idOf(1),issueVersion(issue.id()),true).andExpect(status().isOk());
+        var done=new com.zello.zello.issue.IssueService.Details("fix: 로그인 오류", "실제 작업 설명", com.zello.zello.domain.issue.Issue.WorkStatus.DONE,
+            com.zello.zello.domain.issue.Issue.Priority.MEDIUM,com.zello.zello.domain.issue.Issue.SourceType.REQUEST,null,"","",null,null);
+        issueService.edit(projectId,owner.userId(),Long.parseLong(issue.id()),new com.zello.zello.issue.IssueService.Update(issueVersion(issue.id()),done,com.zello.zello.domain.issue.Issue.GithubState.OPEN,null,null),null);
+        var first=notes().andExpect(jsonPath("$.items[0].changes.length()").value(1)).andExpect(jsonPath("$.items[0].changes[0].status").value("COMPLETED")).andReturn().getResponse().getContentAsString();
+        String noteId=JsonPath.read(first,"$.items[0].id");
+        long noteVersion=((Number)JsonPath.read(first,"$.items[0].version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+noteId)).with(as(owner)).with(csrf()).contentType("application/json").content("{\"title\":\"팀 소식\",\"summary\":\"사람이 편집한 소개\",\"version\":"+noteVersion+",\"publish\":false}")).andExpect(status().isOk());
+        stubFetch(fetched(1,1,ownerGithubId,"closed",false,Instant.parse("2026-10-31T01:00:00Z"),PullRequest.ReviewDecision.APPROVED));
+        sync().andExpect(status().isOk());sync().andExpect(status().isOk());
+        notes().andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].summary").value("사람이 편집한 소개"))
+            .andExpect(jsonPath("$.items[0].changes.length()").value(1)).andExpect(jsonPath("$.items[0].changes[0].status").value("MERGED"))
+            .andExpect(jsonPath("$.items[0].changes[0].category").value("FIX"));
+    }
+    @Test
+    void mergedStandalonePullsAreDeduplicatedAndClosedUnmergedPullsAreExcluded() throws Exception {
+        stubFetch(fetched(1,1,ownerGithubId,"closed",false,Instant.parse("2026-10-31T01:00:00Z"),PullRequest.ReviewDecision.APPROVED),
+            fetched(2,2,ownerGithubId,"closed",false,null,PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());sync().andExpect(status().isOk());
+        notes().andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].changes.length()").value(1))
+            .andExpect(jsonPath("$.items[0].changes[0].pullRequestId").value(idOf(1)))
+            .andExpect(jsonPath("$.items[0].changes[0].needsTitle").value(true));
+        var draft=notes().andReturn().getResponse().getContentAsString();
+        String noteId=JsonPath.read(draft,"$.items[0].id"), changeId=JsonPath.read(draft,"$.items[0].changes[0].id");
+        long noteVersion=((Number)JsonPath.read(draft,"$.items[0].version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+noteId+"/changes/"+changeId)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"팀에 전달할 반영 제목\",\"version\":"+noteVersion+"}")).andExpect(status().isOk());
+        var issue=localIssue();linkIssue(issue.id(),idOf(1),issueVersion(issue.id()),true).andExpect(status().isOk());
+        notes().andExpect(jsonPath("$.items[0].changes[?(@.status == 'MERGED')]").value(org.hamcrest.Matchers.hasSize(1)))
+            .andExpect(jsonPath("$.items[0].changes[?(@.status == 'MERGED')].title").value(org.hamcrest.Matchers.contains("팀에 전달할 반영 제목")))
+            .andExpect(jsonPath("$.items[0].changes[?(@.status == 'MERGED')].needsTitle").value(org.hamcrest.Matchers.contains(false)))
+            .andExpect(jsonPath("$.items[0].changes[?(@.status == 'CONSOLIDATED')]").value(org.hamcrest.Matchers.hasSize(1)));
+    }
+    private ResultActions notes() throws Exception { return mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(status().isOk()); }
 
 
     @Test

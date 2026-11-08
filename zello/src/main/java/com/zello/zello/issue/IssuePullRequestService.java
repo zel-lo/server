@@ -22,9 +22,11 @@ public class IssuePullRequestService {
     private final ProjectRepository projects;
     private final ProjectService access;
     private final UserRepository users;
+    private final com.zello.zello.workspace.WorkChangeService changes;
 
     public IssuePullRequestService(IssueRepository issues, PullRequestRepository pulls, IssuePullRequestRepository links,
-                                   ProjectRepository projects, ProjectService access, UserRepository users) {
+                                   ProjectRepository projects, ProjectService access, UserRepository users, com.zello.zello.workspace.WorkChangeService changes) {
+        this.changes = changes;
         this.issues = issues; this.pulls = pulls; this.links = links;
         this.projects = projects; this.access = access; this.users = users;
     }
@@ -67,6 +69,7 @@ public class IssuePullRequestService {
             attach(pull, List.of(issue), userId);
         } else { links.deleteById(id); links.flush(); }
         recalculate(issueId);
+        changes.pull(pull);
         entityManager.lock(issue, jakarta.persistence.LockModeType.OPTIMISTIC_FORCE_INCREMENT);
         // A link edit must invalidate an issue editor even when the derived status stays the same.
         issues.flush();
@@ -96,6 +99,7 @@ public class IssuePullRequestService {
     @Transactional
     public void recalculateForPull(long pullId) {
         for (var row : links.findByIdPullRequestIdIn(List.of(pullId))) recalculate(row.getIssue().getId());
+        pulls.findById(pullId).ifPresent(changes::pull);
     }
 
     @Transactional
@@ -113,6 +117,7 @@ public class IssuePullRequestService {
             completed = active.stream().map(PullRequest::getMergedAt).filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
         }
         issue.applyPullRequestStatus(status, completed);
+        changes.issue(issue);
     }
 
     private ApiException notFound() { return new ApiException(404, "ISSUE_PR_LINK_NOT_FOUND", "같은 저장소의 이슈와 PR을 찾을 수 없어요."); }

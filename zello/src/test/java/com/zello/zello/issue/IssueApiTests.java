@@ -69,6 +69,106 @@ class IssueApiTests {
         return new GitHubIssues.Remote(sourceId*100+number,number,"https://github.com/team/server/issues/"+number,"로그인 개선",body,state,
                 new GitHubIssues.Person(githubId,"issue-owner-"+githubId,"User",null),List.of(),Instant.parse("2026-10-31T12:00:00Z"),null,List.of(new GitHubIssues.Label("priority:high")));
     }
+    @Test void workspaceSummaryAndNotificationReadsAreScopedToRecipient() throws Exception {
+        var other=member(ProjectMember.Role.MEMBER);
+        var otherLogin=users.findWithGithubAccountById(other.userId()).orElseThrow().getGithubAccount().getLogin();
+        create(UUID.randomUUID().toString(),otherLogin).andExpect(status().isCreated());
+        mvc.perform(get(base("/summary")).with(as(other))).andExpect(status().isOk()).andExpect(jsonPath("$.issues.TODO").value(1)).andExpect(jsonPath("$.mine").value(1)).andExpect(jsonPath("$.unread").value(1)).andExpect(jsonPath("$.contributions[0].count").value(1));
+        String nid=JsonPath.read(mvc.perform(get(base("/notifications?unread=true")).with(as(other))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString(),"$.items[0].id");
+        mvc.perform(patch(base("/notifications/"+nid)).with(as(owner)).with(csrf()).contentType("application/json").content("{\"read\":true}")).andExpect(status().isNotFound());
+        mvc.perform(patch(base("/notifications/"+nid)).with(as(other)).contentType("application/json").content("{\"read\":true}")).andExpect(status().isForbidden());
+        mvc.perform(patch(base("/notifications/"+nid)).with(as(other)).with(csrf()).contentType("application/json").content("{\"read\":true}")).andExpect(status().isNoContent());
+        mvc.perform(get(base("/summary")).with(as(other))).andExpect(jsonPath("$.unread").value(0));
+        mvc.perform(get(base("/activities" )).with(as(other))).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].type").value("ISSUE_ASSIGNED"));
+        var outsider=login.login(new GitHubProfile(IDS.incrementAndGet(),"outsider",null,null,null));
+        mvc.perform(get(base("/summary")).with(as(outsider))).andExpect(status().isNotFound());
+    }
+    @Test void patchNotesPersistPublishOnceAndRejectViewersAndStaleVersions() throws Exception {
+        String body="{\"title\":\"Update\",\"summary\":\"Details\",\"publish\":false}";
+        var viewer=member(ProjectMember.Role.VIEWER);
+        mvc.perform(post(base("/patch-notes")).with(as(viewer)).with(csrf()).contentType("application/json").content(body)).andExpect(status().isForbidden());
+        String nid=JsonPath.read(mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json").content(body)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString(),"$.id");
+        String edit="{\"title\":\"Update\",\"summary\":\"Published\",\"version\":0,\"publish\":true}";
+        mvc.perform(patch(base("/patch-notes/"+nid)).with(as(owner)).with(csrf()).contentType("application/json").content(edit)).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PUBLISHED"));
+        mvc.perform(patch(base("/patch-notes/"+nid)).with(as(owner)).with(csrf()).contentType("application/json").content(edit)).andExpect(status().isConflict());
+        mvc.perform(get(base("/patch-notes")).with(as(viewer))).andExpect(status().isOk()).andExpect(jsonPath("$.items[0].summary").value("Published"));
+        mvc.perform(get(base("/activities")).with(as(viewer))).andExpect(jsonPath("$.items[0].type").value("PATCH_NOTE_PUBLISHED"));
+        mvc.perform(get(base("/activities?page=0")).with(as(owner))).andExpect(status().isBadRequest());
+    }
+    @Test void directCompletionCollectsOneDraftAndReopeningIsVisibleWithoutDeletingHistory() throws Exception {
+        String id=createId();
+        update(id,version(id),details(null).replace("TODO","DONE"),"CLOSED").andExpect(status().isOk());
+        update(id,version(id),details(null).replace("TODO","DONE"),"CLOSED").andExpect(status().isOk());
+        var response=mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].automatic").value(true))
+            .andExpect(jsonPath("$.items[0].changes.length()").value(1)).andExpect(jsonPath("$.items[0].changes[0].status").value("COMPLETED"))
+            .andReturn().getResponse().getContentAsString();
+        String note=JsonPath.read(response,"$.items[0].id");
+        long version=((Number)JsonPath.read(response,"$.items[0].version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"직접 정리한 제목\",\"summary\":\"편집 내용 보존\",\"version\":"+version+",\"publish\":false}")).andExpect(status().isOk());
+        update(id,version(id),details(null),"OPEN").andExpect(status().isOk());
+        mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andExpect(jsonPath("$.title").value("직접 정리한 제목"))
+            .andExpect(jsonPath("$.summary").value("편집 내용 보존")).andExpect(jsonPath("$.changes[0].status").value("REOPENED"));
+        mvc.perform(get(base("/activities")).with(as(owner))).andExpect(jsonPath("$.items.length()").value(1));
+    }
+    @Test void collectingExistingCompletionsRequiresWriterAndCsrfAndIsIdempotent() throws Exception {
+        String id=createId();
+        // Simulate a pre-feature row without calling the completion workflow.
+        var old=issues.findById(Long.parseLong(id)).orElseThrow();old.plan(Issue.WorkStatus.DONE,old.getPriority(),old.getSourceType(),old.getMeetingDate(),old.getMeetingContext(),old.getAcceptanceCriteria());issues.saveAndFlush(old);
+        mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(jsonPath("$.items.length()").value(0));
+        var viewer=member(ProjectMember.Role.VIEWER);
+        mvc.perform(post(base("/patch-notes/collect")).with(as(viewer)).with(csrf())).andExpect(status().isForbidden());
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner))).andExpect(status().isForbidden());
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].changes.length()").value(1));
+    }
+    @Test void completionStoresAnAuthoredPatchTitleWithoutRenamingTheIssueAndCollectionPreservesIt() throws Exception {
+        String id=createId();
+        String input="{\"version\":"+version(id)+",\"details\":"+details(null).replace("TODO","DONE")+",\"githubState\":\"CLOSED\",\"patchNoteTitle\":\"  로그인 화면을 더 편하게 개선했어요  \"}";
+        mvc.perform(patch(base("/issues/"+id)).with(as(owner)).with(csrf()).contentType("application/json").content(input))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.title").value("로그인 개선")).andExpect(jsonPath("$.status").value("DONE"));
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(get(base("/patch-notes")).with(as(owner)))
+            .andExpect(jsonPath("$.items[0].changes.length()").value(1))
+            .andExpect(jsonPath("$.items[0].changes[0].title").value("로그인 화면을 더 편하게 개선했어요"))
+            .andExpect(jsonPath("$.items[0].changes[0].needsTitle").value(false));
+        String another=createId();
+        mvc.perform(patch(base("/issues/"+another)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"version\":"+version(another)+",\"details\":"+details(null).replace("TODO","DONE")+",\"githubState\":\"CLOSED\",\"patchNoteTitle\":\"   \"}"))
+            .andExpect(status().isBadRequest());
+        detail(another).andExpect(jsonPath("$.status").value("TODO"));
+    }
+    @Test void githubCompletionNeedsAnAuthoredTitleBeforePublicationAndRejectsStaleOrUnauthorizedEdits() throws Exception {
+        issueService.sync(projectId,owner.userId(),repositoryId,List.of(remote(33,"GitHub 본문","closed")));
+        var response=mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].changes[0].needsTitle").value(true)).andReturn().getResponse().getContentAsString();
+        String note=JsonPath.read(response,"$.items[0].id"), change=JsonPath.read(response,"$.items[0].changes[0].id");
+        long noteVersion=((Number)JsonPath.read(response,"$.items[0].version")).longValue();
+        String publication="{\"title\":\"이번 주 소식\",\"summary\":\"팀 변경 사항\",\"publish\":true,\"version\":"+noteVersion+"}";
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(publication))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("CHANGE_TITLE_REQUIRED"));
+        String path=base("/patch-notes/"+note+"/changes/"+change);
+        String edit="{\"title\":\"GitHub에서 개선한 로그인 흐름\",\"version\":"+noteVersion+"}";
+        var viewer=member(ProjectMember.Role.VIEWER);
+        mvc.perform(patch(path).with(as(viewer)).with(csrf()).contentType("application/json").content(edit)).andExpect(status().isForbidden());
+        mvc.perform(patch(path).with(as(owner)).contentType("application/json").content(edit)).andExpect(status().isForbidden());
+        mvc.perform(patch(path).with(as(owner)).with(csrf()).contentType("application/json").content(edit)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.changes[0].title").value("GitHub에서 개선한 로그인 흐름")).andExpect(jsonPath("$.changes[0].needsTitle").value(false));
+        mvc.perform(patch(path).with(as(owner)).with(csrf()).contentType("application/json").content(edit)).andExpect(status().isConflict());
+        issueService.sync(projectId,owner.userId(),repositoryId,List.of(remote(33,"GitHub 본문 변경","closed")));
+        var latest=mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andExpect(jsonPath("$.changes[0].title").value("GitHub에서 개선한 로그인 흐름"))
+            .andExpect(jsonPath("$.changes[0].needsTitle").value(false)).andReturn().getResponse().getContentAsString();
+        long next=((Number)JsonPath.read(latest,"$.version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content(publication.replace("\"version\":"+noteVersion,"\"version\":"+next))).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PUBLISHED"));
+        var published=mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andReturn().getResponse().getContentAsString();
+        long publishedVersion=((Number)JsonPath.read(published,"$.version")).longValue();
+        mvc.perform(patch(path).with(as(owner)).with(csrf()).contentType("application/json").content(edit.replace("\"version\":"+noteVersion,"\"version\":"+publishedVersion)))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("NOTE_PUBLISHED"));
+    }
     @Test void savesLocallyBeforePublishingAndReplayDoesNotDuplicate() throws Exception {
         String key=UUID.randomUUID().toString();String id=JsonPath.read(create(key,null).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.publishStatus").value("LOCAL")).andExpect(jsonPath("$.number").isEmpty())

@@ -33,10 +33,12 @@ public class IssueService {
     private final ProjectMemberRepository members;
     private final ActivityRepository activities;
     private final NotificationRepository notifications;
+    private final com.zello.zello.workspace.WorkChangeService changes;
     private static final Pattern MARKER = Pattern.compile("\\n?<!-- zello:issue:([A-Za-z0-9-]{16,64}) -->");
     public IssueService(ProjectService projects, ProjectRepository projectRows, GitRepositoryRepository repositories,
                         IssueRepository issues, UserRepository users, GitHubAccountRepository accounts,
-                        ProjectMemberRepository members,ActivityRepository activities,NotificationRepository notifications, IssuePullRequestService links) {
+                        ProjectMemberRepository members,ActivityRepository activities,NotificationRepository notifications, IssuePullRequestService links, com.zello.zello.workspace.WorkChangeService changes) {
+        this.changes = changes;
         this.links=links;
         this.projects=projects; this.projectRows=projectRows; this.repositories=repositories;
         this.issues=issues; this.users=users; this.accounts=accounts;
@@ -92,6 +94,7 @@ public class IssueService {
                 .publishStatus(PublishStatus.LOCAL).publishRequestKey(input.requestKey()).build();
         row.schedule(d.plannedWeekStart()==null ? ProjectWeeks.current(projectRows.findById(projectId).orElseThrow()) : d.plannedWeekStart());row.creationHash(hash);issues.saveAndFlush(row);row.assignDisplayKey();issues.flush();
         notifyAssignment(projectId,userId,row,null);
+        changes.issue(row);
         return view(row);
     }
     @Transactional
@@ -167,9 +170,15 @@ public class IssueService {
     public void version(Issue row,long expected) {
         if(!Objects.equals(row.getVersion(),expected)) throw new ApiException(409,"ISSUE_CHANGED","다른 변경이 있어요. 최신 내용을 확인한 뒤 다시 저장해 주세요.");
     }
+    public void validateCompletionTitle(Issue row,Update input) {
+        if(input.patchNoteTitle()==null) return;
+        if(input.details().status()!=Issue.WorkStatus.DONE)
+            throw new ApiException(409,"WORK_NOT_COMPLETED","완료된 작업에 패치노트 제목을 작성할 수 있어요.");
+    }
     @Transactional
     public View edit(long projectId,long userId,long id,Update input,GitHubIssues.Remote remote) {
         lock(projectId); var row=find(projectId,userId,id,true); version(row,input.version());
+        validateCompletionTitle(row,input);
         validatePlacement(projectId,userId,id,input.details().status(),input.placement());
         Long before=row.getAssigneeAccountId();
         if(remote!=null) applyRemote(row,remote);
@@ -181,9 +190,11 @@ public class IssueService {
         var d=input.details(); row.plan(row.getGithubState()==Issue.GithubState.CLOSED ? Issue.WorkStatus.DONE : d.status(),d.priority(),d.source(),d.meetingDate(),d.meetingContext(),d.acceptanceCriteria());
         row.schedule(d.plannedWeekStart());
         links.recalculate(id);
+        changes.issueTitle(row,input.patchNoteTitle());
         if(input.placement()!=null) place(projectId,row,input.placement());
         issues.flush();notifyAssignment(projectId,userId,row,before);return view(row);
     }
+
 
     public Issue validatePlacement(long projectId,long userId,long id,Issue.WorkStatus status,Placement placement) {
         if(placement==null) return null;
@@ -216,6 +227,7 @@ public class IssueService {
     public void archive(long projectId,long userId,long id,long version,boolean archived) {
         lock(projectId);var row=find(projectId,userId,id,true);version(row,version);
         if(archived) row.archive(EntitySupport.now()); else row.restore();
+        changes.issue(row);
     }
     @Transactional
     public int sync(long projectId,long userId,long repositoryId,List<GitHubIssues.Remote> fetched) {
@@ -284,7 +296,8 @@ public class IssueService {
     public record Create(@NotNull @Positive Long repositoryId,@NotNull @jakarta.validation.Valid Details details,
                          @NotBlank @jakarta.validation.constraints.Pattern(regexp="[A-Za-z0-9-]{16,64}") String requestKey) { }
     public record Update(@NotNull @PositiveOrZero Long version,@NotNull @jakarta.validation.Valid Details details,
-                         @NotNull Issue.GithubState githubState,@jakarta.validation.Valid Placement placement) { }
+                         @NotNull Issue.GithubState githubState,@jakarta.validation.Valid Placement placement,
+                         @Size(max=255) @jakarta.validation.constraints.Pattern(regexp="(?s).*\\S.*", message="패치노트 제목을 입력해 주세요.") String patchNoteTitle) { }
     public record Placement(@Positive Long beforeId) { }
     public record Reservation(long id,boolean retry,boolean published) { }
     public record Page(List<View> items,int page,boolean hasNext,long total) { }
