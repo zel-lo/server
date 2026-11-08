@@ -19,7 +19,7 @@ public interface IssueRepository extends JpaRepository<Issue, Long> {
 
         and ((:archived=true and i.archivedAt is not null) or (:archived=false and i.archivedAt is null))
         and (:activeOnly=false or i.workStatus<>com.zello.zello.domain.issue.Issue.WorkStatus.DONE)
-        and (:status is null or i.workStatus=:status) and (:assignee is null or i.assigneeAccountId=:assignee)
+        and (:status is null or i.workStatus=:status or (:status=com.zello.zello.domain.issue.Issue.WorkStatus.IN_PROGRESS and i.workStatus=com.zello.zello.domain.issue.Issue.WorkStatus.TODO)) and (:assignee is null or i.assigneeAccountId=:assignee)
         and (:query='' or lower(i.title) like concat('%',lower(:query),'%') or lower(i.issueKey) like concat('%',lower(:query),'%'))
         and (:repositoryFilter is null or i.repositoryId=:repositoryFilter)
         and (:unassigned=false or i.assigneeAccountId is null)
@@ -33,7 +33,7 @@ public interface IssueRepository extends JpaRepository<Issue, Long> {
                        Long assignee, String query, Long repositoryFilter, boolean unassigned, String assigneeFilter, LocalDate week, LocalDateTime weekAt, LocalDateTime weekEnd, Pageable pageable);
 
     @Query("""
-        select i from Issue i where i.repository.projectId=:projectId and i.workStatus=:status
+        select i from Issue i where i.repository.projectId=:projectId and (i.workStatus=:status or (:status in (com.zello.zello.domain.issue.Issue.WorkStatus.TODO,com.zello.zello.domain.issue.Issue.WorkStatus.IN_PROGRESS) and i.workStatus in (com.zello.zello.domain.issue.Issue.WorkStatus.TODO,com.zello.zello.domain.issue.Issue.WorkStatus.IN_PROGRESS)))
         and i.archivedAt is null
         and i.repository.connectionStatus<>com.zello.zello.domain.repository.GitRepository.ConnectionStatus.DISCONNECTED
         order by i.boardOrder asc, i.id desc

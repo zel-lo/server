@@ -195,6 +195,9 @@ public class IssueService {
         issues.flush();notifyAssignment(projectId,userId,row,before);return view(row);
     }
 
+    private static Issue.WorkStatus boardStatus(Issue.WorkStatus status) {
+        return status == Issue.WorkStatus.TODO ? Issue.WorkStatus.IN_PROGRESS : status;
+    }
 
     public Issue validatePlacement(long projectId,long userId,long id,Issue.WorkStatus status,Placement placement) {
         if(placement==null) return null;
@@ -202,7 +205,7 @@ public class IssueService {
         if(row.getArchivedAt()!=null) throw new ApiException(409,"ISSUE_ARCHIVED","보관한 작업은 먼저 복원해 주세요.");
         if(placement.beforeId()==null) return null;
         var target=find(projectId,userId,placement.beforeId(),false);
-        if(target.getId()==id || target.getArchivedAt()!=null || target.getWorkStatus()!=status)
+        if(target.getId()==id || target.getArchivedAt()!=null || boardStatus(target.getWorkStatus())!=boardStatus(status))
             throw new ApiException(409,"BOARD_CHANGED","보드가 변경됐어요. 최신 작업을 확인한 뒤 다시 옮겨주세요.");
         return target;
     }

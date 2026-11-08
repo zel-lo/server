@@ -314,10 +314,14 @@ class IssueApiTests {
         mvc.perform(get(base("/issues")).with(as(owner))).andExpect(jsonPath("$.items[0].id").value(third)).andExpect(jsonPath("$.items[1].id").value(first)).andExpect(jsonPath("$.items[2].id").value(second));
         placement(first,before,"TODO",null).andExpect(status().isConflict());
         placement(second,version(second),"IN_PROGRESS",null).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("IN_PROGRESS"));
-        mvc.perform(get(base("/issues")+"?status=IN_PROGRESS").with(as(owner))).andExpect(jsonPath("$.items[0].id").value(second));
-        // An anchor in a different column is rejected before any update.
+        mvc.perform(get(base("/issues")+"?status=IN_PROGRESS").with(as(owner)))
+            .andExpect(jsonPath("$.total").value(3)).andExpect(jsonPath("$.items[0].id").value(third)).andExpect(jsonPath("$.items[2].id").value(second));
+        // Legacy TODO and IN_PROGRESS now share one column and support ordering across the two values.
+        placement(first,version(first),"IN_PROGRESS",second).andExpect(status().isOk());
+        placement(second,version(second),"BACKLOG",null).andExpect(status().isOk());
+        // An anchor in a genuinely different column is rejected before any update.
         placement(first,version(first),"TODO",second).andExpect(status().isConflict());
-        detail(first).andExpect(jsonPath("$.status").value("TODO"));
+        detail(first).andExpect(jsonPath("$.status").value("IN_PROGRESS"));
         verifyNoInteractions(github);
     }
     @Test void weeklyWorkCarriesWithoutCopiesAndCompletionStaysInItsWeek() throws Exception {
