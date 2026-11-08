@@ -191,6 +191,8 @@ Table "project_invitations" {
   "expires_at" DATETIME(6) [not null]
   "accepted_at" DATETIME(6)
   "revoked_at" DATETIME(6)
+  "reusable" BOOLEAN [not null, default: false]
+  "use_count" INT [not null, default: 0]
   "created_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
   "updated_at" DATETIME(6) [not null, default: `CURRENT_TIMESTAMP(6)`]
 
@@ -200,12 +202,24 @@ Table "project_invitations" {
     `accepted_at IS NULL OR revoked_at IS NULL` [name: 'ck_project_invitations_terminal']
     `expires_at > created_at` [name: 'ck_project_invitations_expiry']
     `accepted_at IS NULL OR (accepted_at >= created_at AND accepted_at < expires_at)` [name: 'ck_project_invitations_accepted_at']
+    `use_count >= 0` [name: 'ck_project_invitations_use_count']
+    `reusable = FALSE OR (granted_role IN ('MEMBER', 'VIEWER') AND target_account_id IS NULL AND accepted_at IS NULL)` [name: 'ck_project_invitations_reusable']
   }
 
   Indexes {
     token_hash [unique, name: "uk_project_invitations_token_hash"]
     (project_id, created_at, id) [name: "idx_project_invitations_created"]
     (project_id, invited_by_user_id, accepted_at, revoked_at, expires_at) [name: "idx_project_invitations_pending"]
+  }
+}
+
+Table "project_invitation_uses" {
+  "invitation_id" BIGINT [not null]
+  "user_id" BIGINT [not null]
+  "accepted_at" DATETIME(6) [not null]
+
+  Indexes {
+    (invitation_id, user_id) [pk, name: "pk_project_invitation_uses"]
   }
 }
 
@@ -592,6 +606,10 @@ Ref "fk_project_invitations_inviter":"users"."id" <? "project_invitations"."invi
 Ref "fk_project_invitations_target":"github_accounts"."id" ?<? "project_invitations"."target_account_id" [update: restrict, delete: restrict]
 
 Ref "fk_project_invitations_accepter":"users"."id" ?<? "project_invitations"."accepted_by_user_id" [update: restrict, delete: restrict]
+
+Ref "fk_invitation_uses_invitation":"project_invitations"."id" < "project_invitation_uses"."invitation_id" [update: restrict, delete: restrict]
+
+Ref "fk_invitation_uses_user":"users"."id" < "project_invitation_uses"."user_id" [update: restrict, delete: restrict]
 
 Ref "fk_webhook_deliveries_installation":"github_installations"."id" ?<? "webhook_deliveries"."installation_id" [update: restrict, delete: restrict]
 

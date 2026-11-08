@@ -396,7 +396,9 @@ erDiagram
 - `target_account_id` FK → github_accounts?, `accepted_by_user_id` FK → users?.
 - `token_hash` VARCHAR(64) UNIQUE, `granted_role` VARCHAR(20), `expires_at` DATETIME.
 - `accepted_at` DATETIME?, `revoked_at` DATETIME?.
-- 구현은 1회 수락 초대를 사용한다. 대상 계정이 있으면 해당 계정만 수락하고, 없으면 링크를 가진 로그인 사용자가 명시적으로 수락한다.
+- `reusable` BOOLEAN(기본 FALSE), `use_count` INT(기본 0).
+- 계정을 지정하지 않은 MEMBER·VIEWER 초대는 여러 명이 사용할 수 있다(`reusable`). 이 경우 `accepted_at`을 종료 상태로 기록하지 않고 `use_count`만 늘린다. ADMIN 초대와 계정 지정 초대, V14 이전에 발급한 초대는 1회만 수락한다. 대상 계정이 있으면 해당 계정만 수락하고, 없으면 링크를 가진 로그인 사용자가 명시적으로 수락한다.
+- `project_invitation_uses`는 초대별 사용자의 수락 이력을 (`invitation_id`, `user_id`) PK로 저장한다. 내보내졌거나 나간 사용자가 이미 사용한 링크로 다시 참여하는 것을 막는다.
 - 원문 초대 토큰은 저장하지 않는다. 유효성 검사·소비·멤버 생성은 트랜잭션으로 묶어 중복 수락을 막는다.
 - accepted_at과 accepted_by_user_id는 둘 다 NULL이거나 둘 다 있어야 하고, 수락과 취소는 동시에 기록하지 못한다. 수락 시각은 발급 이후·만료 이전이어야 한다. expires_at은 created_at보다 뒤여야 한다.
 - 소유권 이전은 초대 역할과 별도로 처리한다.
@@ -529,7 +531,7 @@ UNIQUE 및 FK 인덱스 외에 실제 조회 조건에 맞춰 다음을 추가�
 
 ## 8. 구현 순서
 
-1. **회원·프로젝트**: github_accounts, users, projects, project_members, project_invitations.
+1. **회원·프로젝트**: github_accounts, users, projects, project_members, project_invitations, project_invitation_uses.
 2. **저장소 연결**: github_installations, repositories, webhook_deliveries, repository_sync_runs.
 3. **실제 작업 흐름**: issues, pull_requests, issue_pull_requests, pull_request_reviewers, pull_request_reviews.
 4. **이력·알림**: activities, notifications. 앞 단계의 변경 이벤트 기록과 함께 연결한다.

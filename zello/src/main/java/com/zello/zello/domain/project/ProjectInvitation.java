@@ -30,7 +30,9 @@ import org.hibernate.type.SqlTypes;
                 @CheckConstraint(name = "ck_project_invitations_acceptance", constraint = "(accepted_at IS NULL AND accepted_by_user_id IS NULL) OR (accepted_at IS NOT NULL AND accepted_by_user_id IS NOT NULL)"),
                 @CheckConstraint(name = "ck_project_invitations_terminal", constraint = "accepted_at IS NULL OR revoked_at IS NULL"),
                 @CheckConstraint(name = "ck_project_invitations_expiry", constraint = "expires_at > created_at"),
-                @CheckConstraint(name = "ck_project_invitations_accepted_at", constraint = "accepted_at IS NULL OR (accepted_at >= created_at AND accepted_at < expires_at)")
+                @CheckConstraint(name = "ck_project_invitations_accepted_at", constraint = "accepted_at IS NULL OR (accepted_at >= created_at AND accepted_at < expires_at)"),
+                @CheckConstraint(name = "ck_project_invitations_use_count", constraint = "use_count >= 0"),
+                @CheckConstraint(name = "ck_project_invitations_reusable", constraint = "reusable = FALSE OR (granted_role IN ('MEMBER', 'VIEWER') AND target_account_id IS NULL AND accepted_at IS NULL)")
         })
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ProjectInvitation extends IdentityEntity {
@@ -53,6 +55,12 @@ public class ProjectInvitation extends IdentityEntity {
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "granted_role", nullable = false, length = 20)
     private GrantedRole grantedRole;
+
+    @Column(nullable = false)
+    private boolean reusable;
+
+    @Column(name = "use_count", nullable = false)
+    private int useCount;
 
     @Column(name = "expires_at", nullable = false, columnDefinition = "datetime(6)")
     private LocalDateTime expiresAt;
@@ -87,6 +95,7 @@ public class ProjectInvitation extends IdentityEntity {
             User acceptedByUser,
             String tokenHash,
             GrantedRole grantedRole,
+            boolean reusable,
             LocalDateTime expiresAt,
             LocalDateTime acceptedAt,
             LocalDateTime revokedAt) {
@@ -100,6 +109,11 @@ public class ProjectInvitation extends IdentityEntity {
         this.acceptedByUserId = acceptedByUser == null ? null : EntitySupport.required(acceptedByUser.getId(), "persisted acceptedByUser.id");
         this.tokenHash = EntitySupport.text(tokenHash, "tokenHash");
         this.grantedRole = Objects.requireNonNullElseGet(grantedRole, () -> GrantedRole.MEMBER);
+        if (reusable && (this.grantedRole == GrantedRole.ADMIN || targetAccount != null)) {
+            throw new IllegalArgumentException("Only unrestricted member/viewer links can be reusable");
+        }
+        this.reusable = reusable;
+        this.useCount = acceptedAt == null ? 0 : 1;
         this.expiresAt = EntitySupport.required(expiresAt, "expiresAt");
         this.acceptedAt = acceptedAt;
         this.revokedAt = revokedAt;
@@ -113,9 +127,13 @@ public class ProjectInvitation extends IdentityEntity {
         }
         if (targetAccountId != null) EntitySupport.same(targetAccountId, user.getGithubAccountId(), "invitation account");
         if (user.getStatus() != User.Status.ACTIVE) throw new IllegalStateException("Inactive user");
-        this.acceptedByUser = user;
-        this.acceptedByUserId = EntitySupport.required(user.getId(), "persisted user");
-        this.acceptedAt = acceptedAt;
+        EntitySupport.required(user.getId(), "persisted user");
+        if (!reusable) {
+            this.acceptedByUser = user;
+            this.acceptedByUserId = user.getId();
+            this.acceptedAt = acceptedAt;
+        }
+        this.useCount++;
     }
 
     public void revoke(LocalDateTime now) {

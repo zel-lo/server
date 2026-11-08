@@ -196,6 +196,8 @@ CREATE TABLE project_invitations (
     expires_at DATETIME(6) NOT NULL,
     accepted_at DATETIME(6) NULL,
     revoked_at DATETIME(6) NULL,
+    reusable BOOLEAN NOT NULL DEFAULT FALSE,
+    use_count INT NOT NULL DEFAULT 0,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
@@ -214,7 +216,20 @@ CREATE TABLE project_invitations (
     CONSTRAINT ck_project_invitations_acceptance CHECK ((accepted_at IS NULL AND accepted_by_user_id IS NULL) OR (accepted_at IS NOT NULL AND accepted_by_user_id IS NOT NULL)),
     CONSTRAINT ck_project_invitations_terminal CHECK (accepted_at IS NULL OR revoked_at IS NULL),
     CONSTRAINT ck_project_invitations_expiry CHECK (expires_at > created_at),
-    CONSTRAINT ck_project_invitations_accepted_at CHECK (accepted_at IS NULL OR (accepted_at >= created_at AND accepted_at < expires_at))
+    CONSTRAINT ck_project_invitations_accepted_at CHECK (accepted_at IS NULL OR (accepted_at >= created_at AND accepted_at < expires_at)),
+    CONSTRAINT ck_project_invitations_use_count CHECK (use_count >= 0),
+    CONSTRAINT ck_project_invitations_reusable CHECK (reusable = FALSE OR (granted_role IN ('MEMBER', 'VIEWER') AND target_account_id IS NULL AND accepted_at IS NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE project_invitation_uses (
+    invitation_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    accepted_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (invitation_id, user_id),
+    CONSTRAINT fk_invitation_uses_invitation FOREIGN KEY (invitation_id)
+        REFERENCES project_invitations (id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_invitation_uses_user FOREIGN KEY (user_id)
+        REFERENCES users (id) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE webhook_deliveries (

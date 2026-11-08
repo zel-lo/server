@@ -170,6 +170,8 @@ erDiagram
     repositorySyncRuns |o..o{ repositorySyncRuns : "재시도 이력"
     projects ||..o{ projectInvitations : "초대 발급"
     users ||..o{ projectInvitations : "초대 생성"
+    projectInvitations ||..o{ projectInvitationUses : "사용 이력"
+    users ||..o{ projectInvitationUses : "초대 사용"
 
     githubInstallations {
         bigint id PK
@@ -203,4 +205,11 @@ erDiagram
         varchar token_hash UK
         varchar granted_role
         datetime expires_at
+        boolean reusable
+        int use_count
+    }
+    projectInvitationUses {
+        bigint invitation_id PK, FK
+        bigint user_id PK, FK
+        datetime accepted_at
     }
