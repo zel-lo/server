@@ -83,6 +83,77 @@ class IssueApiTests {
         var outsider=login.login(new GitHubProfile(IDS.incrementAndGet(),"outsider",null,null,null));
         mvc.perform(get(base("/summary")).with(as(outsider))).andExpect(status().isNotFound());
     }
+    @Test void weeklyDashboardCountsThePlanAndCarryOverWithoutBacklogFutureOrOldCompletions() throws Exception {
+        var week=LocalDate.now(ZoneId.of("Asia/Seoul")).with(DayOfWeek.MONDAY);
+        var ownerLogin=users.findWithGithubAccountById(owner.userId()).orElseThrow().getGithubAccount().getLogin();
+        createId(); // Unassigned task in the current plan.
+        String carry=JsonPath.read(create(UUID.randomUUID().toString(),ownerLogin).andReturn().getResponse().getContentAsString(),"$.id");
+        String carrying=details(ownerLogin).replace("TODO","IN_PROGRESS");
+        carrying=carrying.substring(0,carrying.length()-1)+",\"plannedWeekStart\":\""+week.minusWeeks(1)+"\"}";
+        update(carry,version(carry),carrying,"OPEN").andExpect(status().isOk());
+        String done=JsonPath.read(create(UUID.randomUUID().toString(),ownerLogin).andReturn().getResponse().getContentAsString(),"$.id");
+        mvc.perform(patch(base("/issues/"+done)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"version\":"+version(done)+",\"details\":"+details(ownerLogin).replace("TODO","DONE")+",\"githubState\":\"CLOSED\",\"patchNoteTitle\":\"사용자에게 전달할 완료 제목\"}"))
+            .andExpect(status().isOk());
+        String backlog=createId();update(backlog,version(backlog),details(null).replace("TODO","BACKLOG"),"OPEN").andExpect(status().isOk());
+        String future=createId(), planned=details(null);planned=planned.substring(0,planned.length()-1)+",\"plannedWeekStart\":\""+week.plusWeeks(1)+"\"}";
+        update(future,version(future),planned,"OPEN").andExpect(status().isOk());
+        String archived=createId();issueService.archive(projectId,owner.userId(),Long.parseLong(archived),version(archived),true);
+        var closed=remote(55,"오래전에 완료한 기록","closed");
+        var old=week.minusDays(2).atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant();
+        issueService.sync(projectId,owner.userId(),repositoryId,List.of(new GitHubIssues.Remote(closed.id(),closed.number(),closed.htmlUrl(),closed.title(),closed.body(),closed.state(),closed.user(),closed.assignees(),old,null,closed.labels(),old)));
+        mvc.perform(get(base("/dashboard")).with(as(owner))).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+            .andExpect(jsonPath("$.weekStart").value(week.toString())).andExpect(jsonPath("$.total").value(3)).andExpect(jsonPath("$.completed").value(1))
+            .andExpect(jsonPath("$.percentage").value(33)).andExpect(jsonPath("$.carriedOver").value(1)).andExpect(jsonPath("$.completedThisWeek").value(1))
+            .andExpect(jsonPath("$.states.TODO").doesNotExist()).andExpect(jsonPath("$.states.IN_PROGRESS").value(2)).andExpect(jsonPath("$.states.DONE").value(1))
+            .andExpect(jsonPath("$.attentionCounts.unassigned").value(1)).andExpect(jsonPath("$.people[0].inProgress").value(1))
+            .andExpect(jsonPath("$.people[0].completed").value(1)).andExpect(jsonPath("$.people[0].tasks[0].id").value(carry))
+            .andExpect(jsonPath("$.recent[0].title").value("사용자에게 전달할 완료 제목")).andExpect(jsonPath("$.recent[0].needsTitle").value(false));
+    }
+    @Test void weeklyDashboardHandlesEmptyProjectsAndMembershipScope() throws Exception {
+        var viewer=member(ProjectMember.Role.VIEWER);
+        mvc.perform(get(base("/dashboard")).with(as(viewer))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(0)).andExpect(jsonPath("$.percentage").value(0)).andExpect(jsonPath("$.attention.length()").value(0))
+            .andExpect(jsonPath("$.recent.length()").value(0)).andExpect(jsonPath("$.people.length()").value(2));
+        var outsider=login.login(new GitHubProfile(IDS.incrementAndGet(),"dashboard-outsider",null,null,null));
+        mvc.perform(get(base("/dashboard")).with(as(outsider))).andExpect(status().isNotFound());
+        mvc.perform(get(base("/dashboard"))).andExpect(status().isUnauthorized());
+    }
+    @Test void dashboardWeekSelectionUsesTheChosenCompletionWindowAndKeepsTheCurrentWeek() throws Exception {
+        var current=LocalDate.now(ZoneId.of("Asia/Seoul")).with(DayOfWeek.MONDAY);
+        var previous=current.minusWeeks(1);
+        String active=createId(), plan=details(null).replace("TODO","IN_PROGRESS");
+        plan=plan.substring(0,plan.length()-1)+",\"plannedWeekStart\":\""+previous+"\"}";
+        update(active,version(active),plan,"OPEN").andExpect(status().isOk());
+        createId(); // A current-week plan must not enter the previous week.
+        var old=remote(70,"지난 주 완료 기록","closed");
+        var date=previous.plusDays(2).atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant();
+        issueService.sync(projectId,owner.userId(),repositoryId,List.of(new GitHubIssues.Remote(old.id(),old.number(),old.htmlUrl(),old.title(),old.body(),old.state(),old.user(),old.assignees(),date,null,old.labels(),date)));
+        var row=issues.findByRepositoryId(repositoryId).stream().filter(i -> Objects.equals(i.getGithubNumber(),70)).findFirst().orElseThrow();
+        row.schedule(previous);issues.saveAndFlush(row);
+        mvc.perform(get(base("/dashboard")+"?week="+previous).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.weekStart").value(previous.toString())).andExpect(jsonPath("$.weekEnd").value(previous.plusDays(6).toString()))
+            .andExpect(jsonPath("$.currentWeek").value(current.toString())).andExpect(jsonPath("$.periodLabel").value("지난 주"))
+            .andExpect(jsonPath("$.total").value(2)).andExpect(jsonPath("$.percentage").value(50))
+            .andExpect(jsonPath("$.completedThisWeek").value(1)).andExpect(jsonPath("$.recent[0].id").value(row.getId().toString()));
+        mvc.perform(get(base("/dashboard")).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.weekStart").value(current.toString())).andExpect(jsonPath("$.total").value(2))
+            .andExpect(jsonPath("$.completedThisWeek").value(0)).andExpect(jsonPath("$.recent.length()").value(0));
+        mvc.perform(get(base("/dashboard")+"?week="+previous.plusDays(1)).with(as(owner))).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_WEEK"));
+        mvc.perform(get(base("/dashboard")+"?week=not-a-date").with(as(owner))).andExpect(status().isBadRequest());
+    }
+    @Autowired org.springframework.jdbc.core.JdbcTemplate dashboardJdbc;
+    @Test void dashboardWeeksFollowProjectStartDaysAndClampTheLastWeekToTheProjectEnd() throws Exception {
+        var start=LocalDate.now(ZoneId.of("Asia/Seoul")).with(DayOfWeek.MONDAY).minusWeeks(1).plusDays(2);
+        var end=start.plusDays(16);
+        dashboardJdbc.update("update projects set start_date=?,end_date=? where id=?",java.sql.Date.valueOf(start),java.sql.Date.valueOf(end),projectId);
+        mvc.perform(get(base("/dashboard")+"?week="+start.plusWeeks(2)).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.weekStart").value(start.plusWeeks(2).toString())).andExpect(jsonPath("$.weekEnd").value(end.toString()))
+            .andExpect(jsonPath("$.projectStartDate").value(start.toString())).andExpect(jsonPath("$.projectEndDate").value(end.toString()));
+        mvc.perform(get(base("/dashboard")+"?week="+start.minusWeeks(1)).with(as(owner))).andExpect(status().isBadRequest());
+        mvc.perform(get(base("/dashboard")+"?week="+start.plusWeeks(3)).with(as(owner))).andExpect(status().isBadRequest());
+        mvc.perform(get(base("/dashboard")+"?week="+start.plusDays(1)).with(as(owner))).andExpect(status().isBadRequest());
+    }
     @Test void patchNotesPersistPublishOnceAndRejectViewersAndStaleVersions() throws Exception {
         String body="{\"title\":\"Update\",\"summary\":\"Details\",\"publish\":false}";
         var viewer=member(ProjectMember.Role.VIEWER);

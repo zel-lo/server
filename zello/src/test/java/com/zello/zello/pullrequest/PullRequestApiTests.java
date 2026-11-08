@@ -743,6 +743,31 @@ class PullRequestApiTests {
     }
     private ResultActions notes() throws Exception { return mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(status().isOk()); }
 
+    @Test void weeklyDashboardSeparatesReviewAgeReviewAssignmentsAndCanonicalCompletions() throws Exception {
+        var pending=fetched(1,1,ownerGithubId,"open",false,null,PullRequest.ReviewDecision.PENDING);
+        var r=pending.pull();
+        pending=new GitHubPullRequests.Fetched(new GitHubPullRequests.Remote(r.id(),r.number(),r.htmlUrl(),r.title(),r.body(),r.state(),r.draft(),r.user(),r.head(),r.base(),r.mergeCommitSha(),
+            Instant.now().minusSeconds(5*86400),Instant.now(),null,null),PullRequest.ReviewDecision.PENDING);
+        stubFetch(pending,
+            fetched(2,2,ownerGithubId,"open",false,null,PullRequest.ReviewDecision.CHANGES_REQUESTED),
+            fetched(3,3,ownerGithubId,"open",true,null,PullRequest.ReviewDecision.PENDING),
+            fetched(4,4,ownerGithubId,"closed",false,Instant.now(),PullRequest.ReviewDecision.APPROVED),
+            withReviewers(fetched(5,5,ownerGithubId,"open",false,null,PullRequest.ReviewDecision.PENDING),ownerGithubId));
+        sync().andExpect(status().isOk());
+        mvc.perform(get(base("/dashboard")).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.attentionCounts.reviewAging").value(1)).andExpect(jsonPath("$.attentionCounts.changesRequested").value(1))
+            .andExpect(jsonPath("$.attention[?(@.kind == 'REVIEW_AGING')].ageDays").value(org.hamcrest.Matchers.contains(5)))
+            .andExpect(jsonPath("$.attention[?(@.kind == 'CHANGES_REQUESTED')].timeLabel").value(org.hamcrest.Matchers.contains("수정 요청")))
+            .andExpect(jsonPath("$.people[0].reviewing").value(1)).andExpect(jsonPath("$.completedThisWeek").value(1))
+            .andExpect(jsonPath("$.recent[0].type").value("PR")).andExpect(jsonPath("$.recent[0].needsTitle").value(true));
+        var issue=localIssue();linkIssue(issue.id(),idOf(4),issueVersion(issue.id()),true).andExpect(status().isOk());
+        mvc.perform(get(base("/dashboard")).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.total").value(1)).andExpect(jsonPath("$.completed").value(1)).andExpect(jsonPath("$.percentage").value(100))
+            .andExpect(jsonPath("$.recentTotal").value(1)).andExpect(jsonPath("$.recent[0].type").value("ISSUE"));
+        var previous=java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul")).with(java.time.DayOfWeek.MONDAY).minusWeeks(1);
+        mvc.perform(get(base("/dashboard")+"?week="+previous).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.recentTotal").value(0)).andExpect(jsonPath("$.people[0].reviewing").value(0));
+    }
 
     @Test
     void multiplePullRequestsWaitForOpenWorkAndClosedUnmergedPullRestoresThePlan() throws Exception {
