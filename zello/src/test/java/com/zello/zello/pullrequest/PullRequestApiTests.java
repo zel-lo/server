@@ -83,6 +83,18 @@ class PullRequestApiTests {
     }
 
     @Test
+    void emptyTeamSummaryUsesBodyOrTitleWithoutRequiringManualWriting() throws Exception {
+        when(pulls.create(anyString(),anyString(),anyString(),any())).thenReturn(remote(9,"feat/new","main"));
+        String fields="{\"repositoryId\":\""+repositoryDbId+"\",\"title\":\"로그인 개선\",\"headBranch\":\"feat/new\",\"baseBranch\":\"main\",\"teamSummary\":\"\",\"body\":\"실제 PR 설명\",\"draft\":false,\"requestKey\":\"optional-summary-001\"}";
+        mvc.perform(post(base("/pull-requests")).with(as(owner)).with(csrf()).contentType("application/json").content(fields))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.teamSummary").value("실제 PR 설명"));
+        when(pulls.create(anyString(),anyString(),anyString(),any())).thenReturn(remote(10,"feat/second","main"));
+        mvc.perform(post(base("/pull-requests")).with(as(owner)).with(csrf()).contentType("application/json")
+            .content(fields.replace("feat/new","feat/second").replace("실제 PR 설명","").replace("optional-summary-001","optional-summary-002")))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.teamSummary").value("로그인 개선"));
+    }
+
+    @Test
     void anEmptyGithubBodyIsSentAsBlankAndNotShownAsTheSummary() throws Exception {
         when(pulls.create(anyString(), anyString(), anyString(), any())).thenReturn(remote(9, "feat/new", "main"));
         create("key-0101-aaaa", "feat/new", "main", false).andExpect(status().isCreated())
@@ -691,6 +703,8 @@ class PullRequestApiTests {
                 .andExpect(jsonPath("$.status").value("TODO")).andExpect(jsonPath("$.completedAt").isEmpty());
         list("?unlinked=true").andExpect(jsonPath("$.total").value(1));
     }
+
+
 
     @Test
     void multiplePullRequestsWaitForOpenWorkAndClosedUnmergedPullRestoresThePlan() throws Exception {

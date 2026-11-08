@@ -35,9 +35,11 @@ public class PullRequestController {
     private final GitHubOAuthRepositories oauth;
     private final GitHubPullRequests pulls;
     private final GitHubTokenProvider tokens;
+    private final com.zello.zello.workspace.RuleBasedChangeFormatter formatter;
 
     public PullRequestController(PullRequestService service, PullRequestPublishService publisher, GitHubOAuthRepositories oauth,
-                                 GitHubPullRequests pulls, GitHubTokenProvider tokens, com.zello.zello.issue.IssuePullRequestService links) {
+                                 GitHubPullRequests pulls, GitHubTokenProvider tokens, com.zello.zello.issue.IssuePullRequestService links, com.zello.zello.workspace.RuleBasedChangeFormatter formatter) {
+        this.formatter = formatter;
         this.links = links;
         this.service = service;
         this.publisher = publisher;
@@ -164,7 +166,7 @@ public class PullRequestController {
         String references = selected.stream().filter(i -> i.getGithubNumber() != null)
                 .map(i -> "Closes #" + i.getGithubNumber()).collect(java.util.stream.Collectors.joining("\n"));
         if (!references.isEmpty()) body = (body == null ? "" : body + "\n\n") + references;
-        var draft = new PullRequestPublishService.Draft(input.title().strip(), input.teamSummary().strip(), body, input.headBranch(),
+        var draft = new PullRequestPublishService.Draft(input.title().strip(), formatter.teamSummary(input.title(), input.body(), input.teamSummary()), body, input.headBranch(),
                 input.baseBranch(), input.draft(), input.requestKey(), issueIds);
         var reservation = publisher.reserve(projectId, principal.userId(), repository.getId(), draft);
         if (reservation.published()) {
@@ -272,7 +274,7 @@ public class PullRequestController {
     public record CreatePullRequest(@NotNull @Positive Long repositoryId, @NotBlank @Size(max = 255) String title,
                                     @NotBlank @Size(max = 255) @Pattern(regexp = "\\S+") String headBranch,
                                     @NotBlank @Size(max = 255) @Pattern(regexp = "\\S+") String baseBranch,
-                                    @NotBlank @Size(max = 10000) String teamSummary, @Size(max = 60000) String body, boolean draft,
+                                    @Size(max = 10000) String teamSummary, @Size(max = 60000) String body, boolean draft,
                                     @NotBlank @Pattern(regexp = "[A-Za-z0-9-]{8,64}") String requestKey,
                                     @Size(max = 15) List<@NotBlank @Pattern(regexp = "[A-Za-z0-9-]{1,39}") String> reviewers,
                                     @Size(max = 50) List<@NotNull @Positive Long> issueIds) { }
