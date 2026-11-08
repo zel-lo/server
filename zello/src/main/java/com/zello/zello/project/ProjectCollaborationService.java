@@ -34,6 +34,7 @@ public class ProjectCollaborationService {
     private final ProjectRepository projects;
     private final ProjectMemberRepository members;
     private final ProjectInvitationRepository invitations;
+    private final ProjectInvitationUseRepository invitationUses;
     private final UserRepository users;
     private final GitHubAccountRepository accounts;
     private final ActivityRepository activities;
@@ -45,11 +46,12 @@ public class ProjectCollaborationService {
     private final SecureRandom random = new SecureRandom();
 
     public ProjectCollaborationService(ProjectRepository projects, ProjectMemberRepository members,
-            ProjectInvitationRepository invitations, UserRepository users, GitHubAccountRepository accounts,
+            ProjectInvitationRepository invitations, ProjectInvitationUseRepository invitationUses, UserRepository users, GitHubAccountRepository accounts,
             ActivityRepository activities, ProjectService projectService, AuthProperties auth, Clock clock) {
         this.projects = projects;
         this.members = members;
         this.invitations = invitations;
+        this.invitationUses = invitationUses;
         this.users = users;
         this.accounts = accounts;
         this.activities = activities;
@@ -101,7 +103,7 @@ public class ProjectCollaborationService {
         requireGrantAuthority(project, actorId, role);
         var now = now();
         if (invitations.pending(projectId, now).size() >= MAX_PENDING_INVITATIONS) {
-            throw new ApiException(429, "INVITATION_LIMIT_REACHED", "사용하지 않은 초대 링크가 20개 있어요. 기존 초대를 취소한 뒤 만들어 주세요.");
+            throw new ApiException(429, "INVITATION_LIMIT_REACHED", "유효한 초대 링크가 20개 있어요. 필요 없는 링크를 취소한 뒤 만들어 주세요.");
         }
         var actor = user(actorId);
         GitHubAccount account = target == null ? null : targetAccount(target);
@@ -113,7 +115,7 @@ public class ProjectCollaborationService {
         random.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         var invitation = invitations.saveAndFlush(ProjectInvitation.builder().project(project).invitedByUser(actor)
-                .targetAccount(account).tokenHash(hash(token)).grantedRole(role).expiresAt(now.plusHours(expiresInHours)).build());
+                .targetAccount(account).tokenHash(hash(token)).grantedRole(role).reusable(account == null && role != ProjectInvitation.GrantedRole.ADMIN).expiresAt(now.plusHours(expiresInHours)).build());
         audit(project, actor, "PROJECT_INVITATION_CREATED", "초대 링크를 만들었어요",
                 "invitation=" + invitation.getId() + "; role=" + role + "; target=" + (account == null ? "link holder" : account.getGithubId()));
         return new CreatedInvitation(invitationView(invitation, now), auth.frontendBaseUrl() + "/#/invite/" + token);
@@ -151,9 +153,10 @@ public class ProjectCollaborationService {
         var state = state(invitation, now());
         boolean issuerValid = issuerValid(project, invitation);
         if ("PENDING".equals(state) && !issuerValid) state = "REVOKED";
+        if ("PENDING".equals(state) && membership.isEmpty() && invitationUses.existsById(new ProjectInvitationUseId(invitation.getId(), actorId))) state = "ACCEPTED";
         return new InvitationPreview(project.getId().toString(), project.getName(), invitation.getGrantedRole().name(),
                 invitation.getInvitedByUser().getGithubAccount().getLogin(), invitation.getExpiresAt(), state,
-                membership.isPresent(), !membership.isPresent() && "PENDING".equals(state));
+                membership.isPresent(), !membership.isPresent() && "PENDING".equals(state), invitation.isReusable());
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -176,6 +179,7 @@ public class ProjectCollaborationService {
         if (!"PENDING".equals(state(invitation, now())) || !issuerValid(project, invitation)) throw unavailable();
         // Existing members keep their current role. A shared link cannot promote or demote a member.
         if (alreadyMember) return new Acceptance(projectService.detail(project.getId(), actorId), true);
+        if (invitationUses.existsById(new ProjectInvitationUseId(invitation.getId(), actorId))) throw unavailable();
         var role = ProjectMember.Role.valueOf(invitation.getGrantedRole().name());
         if (existing.isPresent()) {
             existing.get().rejoin(role, now());
@@ -183,6 +187,7 @@ public class ProjectCollaborationService {
             members.save(ProjectMember.builder().project(project).user(actor).role(role).build());
         }
         invitation.accept(actor, now());
+        invitationUses.save(new ProjectInvitationUse(invitation, actor, now()));
         members.flush();
         audit(project, actor, "PROJECT_INVITATION_ACCEPTED", "프로젝트에 참여했어요",
                 "invitation=" + invitation.getId() + "; member=" + actorId + "; role=" + role);
@@ -301,7 +306,7 @@ public class ProjectCollaborationService {
     private InvitationView invitationView(ProjectInvitation i, LocalDateTime now) {
         return new InvitationView(i.getId().toString(), i.getGrantedRole().name(), i.getExpiresAt(), i.getCreatedAt(), state(i, now),
                 i.getInvitedByUser().getGithubAccount().getLogin(), i.getTargetAccount() == null ? null : i.getTargetAccount().getLogin(),
-                i.getAcceptedByUserId() == null ? null : i.getAcceptedByUserId().toString());
+                i.getAcceptedByUserId() == null ? null : i.getAcceptedByUserId().toString(), i.isReusable(), i.getUseCount());
     }
 
     private String state(ProjectInvitation invitation, LocalDateTime now) {
@@ -353,10 +358,10 @@ public class ProjectCollaborationService {
     public record MembersPage(List<MemberView> items, long total, int page, boolean hasNext, String projectName, Long projectVersion,
             String ownerUserId, Long currentMemberVersion, boolean canInvite, boolean canInviteAdmin) { }
     public record InvitationView(String id, String role, LocalDateTime expiresAt, LocalDateTime createdAt, String status,
-            String createdBy, String targetLogin, String acceptedByUserId) { }
+            String createdBy, String targetLogin, String acceptedByUserId, boolean reusable, int useCount) { }
     public record InvitationPage(List<InvitationView> items, int page, boolean hasNext, long total) { }
     public record CreatedInvitation(InvitationView invitation, String inviteUrl) { }
     public record InvitationPreview(String projectId, String projectName, String role, String invitedBy,
-            LocalDateTime expiresAt, String status, boolean alreadyMember, boolean canAccept) { }
+            LocalDateTime expiresAt, String status, boolean alreadyMember, boolean canAccept, boolean reusable) { }
     public record Acceptance(ProjectService.ProjectView project, boolean alreadyMember) { }
 }

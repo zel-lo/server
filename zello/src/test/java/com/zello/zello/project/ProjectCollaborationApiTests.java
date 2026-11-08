@@ -71,7 +71,7 @@ class ProjectCollaborationApiTests {
         mvc.perform(get(base("/members") + "?size=1000").with(as(owner))).andExpect(status().isBadRequest());
     }
 
-    @Test void createsHashedSingleUseLinksAndNeverReturnsSecretsInListsOrHistory() throws Exception {
+    @Test void createsHashedReusableLinksAndNeverReturnsSecretsInListsOrHistory() throws Exception {
         var created = create(owner, "MEMBER", 72, null);
         assertThat(created.token()).hasSize(43).matches("[A-Za-z0-9_-]{43}");
         var row = invitations.findById(created.id()).orElseThrow();
@@ -80,13 +80,14 @@ class ProjectCollaborationApiTests {
         preview(outsider, created.token()).andExpect(status().isOk()).andExpect(jsonPath("$.canAccept").value(true));
         accept(outsider, created.token()).andExpect(status().isOk()).andExpect(jsonPath("$.project.role").value("MEMBER"));
         accept(outsider, created.token()).andExpect(status().isOk()).andExpect(jsonPath("$.alreadyMember").value(true));
-        accept(user("second"), created.token()).andExpect(status().isGone());
+        accept(user("second"), created.token()).andExpect(status().isOk());
+        assertThat(invitations.findById(created.id()).orElseThrow().getUseCount()).isEqualTo(2);
         String listing = mvc.perform(get(base("/invitations")).with(as(owner))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String history = mvc.perform(get(base("/membership-history")).with(as(owner))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat(listing + history).doesNotContain(created.token(), row.getTokenHash(), "tokenHash", "inviteUrl");
-        assertThat(members.active(projectId)).hasSize(5);
+        assertThat(members.active(projectId)).hasSize(6);
         assertThat(activities.membershipHistory(projectId, org.springframework.data.domain.PageRequest.of(0, 100)).getContent()
-                .stream().filter(a -> a.getEventType().equals("PROJECT_INVITATION_ACCEPTED"))).hasSize(1);
+                .stream().filter(a -> a.getEventType().equals("PROJECT_INVITATION_ACCEPTED"))).hasSize(2);
     }
 
     @Test void previewRequiresAuthenticationAndNeverAcceptsOnVisit() throws Exception {
@@ -221,16 +222,29 @@ class ProjectCollaborationApiTests {
                 .content("{\"role\":\"MEMBER\",\"expiresInHours\":72}")) .andExpect(status().isTooManyRequests());
     }
 
-    @Test void concurrentDifferentUsersCannotConsumeTheSameInvitation() throws Exception {
+    @Test void concurrentDifferentUsersCanJoinWithTheSameReusableInvitation() throws Exception {
         var invite = create(owner, "MEMBER", 72, null);
         var first = user("race-one"); var second = user("race-two");
         var barrier = new CyclicBarrier(2);
         try (var executor = Executors.newFixedThreadPool(2)) {
             var a = executor.submit(() -> concurrentAccept(first.userId(), invite.token(), barrier));
             var b = executor.submit(() -> concurrentAccept(second.userId(), invite.token(), barrier));
-            assertThat(List.of(a.get(15, TimeUnit.SECONDS), b.get(15, TimeUnit.SECONDS))).containsExactlyInAnyOrder(200, 410);
+            assertThat(List.of(a.get(15, TimeUnit.SECONDS), b.get(15, TimeUnit.SECONDS))).containsOnly(200);
         }
-        assertThat(members.active(projectId)).hasSize(5);
+        assertThat(members.active(projectId)).hasSize(6);
+        assertThat(invitations.findById(invite.id()).orElseThrow().getUseCount()).isEqualTo(2);
+    }
+
+    @Test void administratorLinksRemainSingleUseAndSharedLinksCanBeRevokedAfterUse() throws Exception {
+        var privileged = create(owner, "ADMIN", 72, null);
+        assertThat(invitations.findById(privileged.id()).orElseThrow().isReusable()).isFalse();
+        accept(user("first-admin"), privileged.token()).andExpect(status().isOk());
+        accept(user("second-admin"), privileged.token()).andExpect(status().isGone());
+        var shared = create(owner, "MEMBER", 72, null);
+        accept(user("first-member"), shared.token()).andExpect(status().isOk());
+        preview(user("next-member"), shared.token()).andExpect(jsonPath("$.canAccept").value(true)).andExpect(jsonPath("$.reusable").value(true));
+        mvc.perform(delete(base("/invitations/" + shared.id())).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        accept(user("late-member"), shared.token()).andExpect(status().isGone());
     }
 
     @Test void concurrentSameUserAcceptanceIsIdempotent() throws Exception {
@@ -241,6 +255,7 @@ class ProjectCollaborationApiTests {
             assertThat(List.of(a.get(15, TimeUnit.SECONDS), b.get(15, TimeUnit.SECONDS))).containsOnly(200);
         }
         assertThat(members.active(projectId)).hasSize(5);
+        assertThat(invitations.findById(invite.id()).orElseThrow().getUseCount()).isEqualTo(1);
     }
 
     @Test void projectSettingsAreRealAndProtectAgainstLostUpdates() throws Exception {
