@@ -85,10 +85,10 @@ class EntitySchemaTests {
                     assertThat(checks).as(tableName + " checks").contains(checkMatcher.group(1));
                 }
             }
-            assertThat(expectedTables).isEqualTo(21);
+            assertThat(expectedTables).isEqualTo(22);
             assertThat(actual).hasSize(expectedTables);
-            assertThat(checkedForeignKeys).isEqualTo(47);
-            assertThat(checkedConstraints).isEqualTo(50);
+            assertThat(checkedForeignKeys).isEqualTo(52);
+            assertThat(checkedConstraints).isEqualTo(53);
             String mysqlDdl = String.join(";\n", new SchemaCreatorImpl(registry).generateCreationCommands(metadata, false));
             assertThat(mysqlDdl).contains("create table issues", "create table notifications", "json", "auto_increment");
             // Retain the generated MySQL script for inspection without connecting to a server.

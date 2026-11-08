@@ -1,0 +1,1 @@
+ALTER TABLE work_changes ADD COLUMN title_written BOOLEAN NOT NULL DEFAULT FALSE;
