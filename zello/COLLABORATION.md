@@ -25,12 +25,14 @@
 | ADMIN 초대 취소 | 가능 | 불가 | 불가 | 불가 |
 | 프로젝트 이름·설명·저장소 관리 | 가능 | 가능 | 불가 | 불가 |
 | 이슈·PR 작성/수정 | 가능 | 가능 | 가능 | 불가 |
-| 프로젝트 나가기 | 소유권 이전 후 | 가능 | 가능 | 가능 |
+| 프로젝트 나가기 | 다른 멤버가 있으면 소유권 이전 후, 혼자 남았으면 보관 확인 후 | 가능 | 가능 | 가능 |
 | 소유권 이전 | 가능 | 불가 | 불가 | 불가 |
 
 소유자는 `projects.owner_user_id`로 판정한다. 멤버십 role에는 ADMIN/MEMBER/VIEWER만 저장한다. 본인 권한 변경·본인 내보내기·소유자 내보내기는 차단한다. 소유권 이전은 활성 멤버에게만 가능하며 새 소유자는 ADMIN, 기존 소유자는 ADMIN으로 남는다.
 
 멤버를 내보내거나 나가면 `left_at`으로 접근을 종료하고 과거 기록/FK는 보존한다. 재초대로 같은 행을 활성화하며 버전은 초기화하지 않는다. 관리자 권한 하향·내보내기·나가기·소유권 이전 시 해당 사용자가 발급한 미사용 초대를 취소한다. 초대 수락 때 발급자의 현재 활성 상태와 권한도 다시 확인한다.
+
+혼자 남은 소유자는 **프로젝트 보관하고 나가기**를 확인하면 `projects.archived_at`과 본인 `left_at`을 함께 기록한다. 프로젝트·작업·멤버십 이력을 삭제하거나 GitHub 저장소를 변경하지 않는다. 보관된 공간은 목록·접근·초대 수락에서 제외한다. 서버가 반환하는 `canLeave`, `leaveArchivesProject`는 검색·페이지 범위와 무관한 전체 미탈퇴 멤버 수를 기준으로 계산하며, 변경 시 프로젝트 잠금 안에서 다시 확인한다. 확인 창을 연 뒤 새 멤버가 참여했으면 보관을 거절한다. 보관 후 나가기에는 `archive=true`를 명시해야 하며 일반 멤버는 이 옵션으로 프로젝트를 보관할 수 없다. 추가 DB 마이그레이션은 필요하지 않다.
 
 ## API
 
@@ -46,7 +48,7 @@
 | POST /api/invitations/accept | token / 명시적 수락 및 참여 프로젝트 반환 |
 | PATCH /api/projects/{id}/members/{userId} | role, version / 권한 변경 |
 | DELETE /api/projects/{id}/members/{userId}?version=... | 멤버 내보내기 |
-| DELETE /api/projects/{id}/membership?version=... | 본인 나가기 |
+| DELETE /api/projects/{id}/membership?version=... | 본인 나가기. 혼자 남은 소유자의 명시적 보관은 archive=true 추가 |
 | POST /api/projects/{id}/ownership | userId, projectVersion, memberVersion / 소유권 이전 |
 | GET /api/projects/{id}/membership-history | page, size / 관리 이력 |
 | PATCH /api/projects/{id} | version, name, description / 기본 설정 |

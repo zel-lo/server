@@ -65,9 +65,10 @@ public class ProjectCollaborationService {
         var actor = active(projectId, actorId);
         var result = members.search(projectId, query.strip(), PageRequest.of(page - 1, size));
         boolean owner = owner(project, actorId);
+        boolean soleOwner = owner && members.countByIdProjectIdAndLeftAtIsNull(projectId) == 1;
         return new MembersPage(result.map(member -> memberView(project, actor, member)).getContent(),
                 result.getTotalElements(), page, result.hasNext(), project.getName(), project.getVersion(),
-                Long.toString(project.getOwnerUserId()), actor.getVersion(), owner || admin(actor), owner);
+                Long.toString(project.getOwnerUserId()), actor.getVersion(), owner || admin(actor), owner, !owner || soleOwner, soleOwner);
     }
 
     @Transactional
@@ -229,14 +230,23 @@ public class ProjectCollaborationService {
     }
 
     @Transactional
-    public void leave(long projectId, long actorId, long version) {
+    public void leave(long projectId, long actorId, long version, boolean archive) {
         var project = lock(projectId);
         var actor = active(projectId, actorId);
-        if (owner(project, actorId)) throw ownerTransferRequired();
+        boolean owner = owner(project, actorId);
+        if (archive && !owner) throw ownerRequired();
+        if (owner) {
+            // Check every remaining membership under the same lock used by invite acceptance.
+            // Search filters, pagination and stale dialogs must never hide another member.
+            if (members.countByIdProjectIdAndLeftAtIsNull(projectId) != 1) throw ownerTransferRequired();
+            if (!archive) throw new ApiException(409, "PROJECT_ARCHIVE_CONFIRMATION_REQUIRED", "혼자 남은 프로젝트는 보관하고 나가기를 확인해 주세요.");
+        }
         version(actor, version);
+        if (owner) project.archive(now());
         actor.leave(now());
         revokeIssued(projectId, actorId);
-        audit(project, user(actorId), "PROJECT_MEMBER_LEFT", "프로젝트를 나갔어요", "member=" + actorId);
+        audit(project, user(actorId), owner ? "PROJECT_ARCHIVED" : "PROJECT_MEMBER_LEFT",
+                owner ? "프로젝트를 보관하고 나갔어요" : "프로젝트를 나갔어요", "member=" + actorId);
     }
 
     @Transactional
@@ -356,7 +366,7 @@ public class ProjectCollaborationService {
     public record MemberView(String userId, String githubId, String login, String displayName, String avatarUrl,
             String role, Long version, LocalDateTime joinedAt, boolean self, boolean canChangeRole, boolean canRemove, boolean canTransferTo) { }
     public record MembersPage(List<MemberView> items, long total, int page, boolean hasNext, String projectName, Long projectVersion,
-            String ownerUserId, Long currentMemberVersion, boolean canInvite, boolean canInviteAdmin) { }
+            String ownerUserId, Long currentMemberVersion, boolean canInvite, boolean canInviteAdmin, boolean canLeave, boolean leaveArchivesProject) { }
     public record InvitationView(String id, String role, LocalDateTime expiresAt, LocalDateTime createdAt, String status,
             String createdBy, String targetLogin, String acceptedByUserId, boolean reusable, int useCount) { }
     public record InvitationPage(List<InvitationView> items, int page, boolean hasNext, long total) { }
