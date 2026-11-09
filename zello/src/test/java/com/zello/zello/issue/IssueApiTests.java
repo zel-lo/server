@@ -240,6 +240,78 @@ class IssueApiTests {
         mvc.perform(patch(path).with(as(owner)).with(csrf()).contentType("application/json").content(edit.replace("\"version\":"+noteVersion,"\"version\":"+publishedVersion)))
             .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("NOTE_PUBLISHED"));
     }
+    String manualNote(String changes,boolean publish,long version) {
+        return "{\"title\":\"팀 업데이트\",\"summary\":\"직접 쓴 소개\",\"publish\":"+publish+",\"version\":"+version+",\"changeIds\":"+changes+"}";
+    }
+    @Test void manualUpdateLinksPersistWithoutMovingTheWeeklySourceAndKeepIndependentPublishedTitles() throws Exception {
+        String issue=createId();
+        update(issue,version(issue),details(null).replace("TODO","DONE"),"CLOSED").andExpect(status().isOk());
+        mvc.perform(get(base("/patch-note-changes"))).andExpect(status().isUnauthorized());
+        String available=mvc.perform(get(base("/patch-note-changes?search=로그인" )).with(as(owner))).andExpect(status().isOk())
+            .andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.items.length()").value(1)).andReturn().getResponse().getContentAsString();
+        String change=JsonPath.read(available,"$.items[0].id");
+        String weekly=mvc.perform(get(base("/patch-notes")).with(as(owner))).andReturn().getResponse().getContentAsString();
+        String weeklyId=JsonPath.read(weekly,"$.items[0].id");
+        String ids="[\""+change+"\",\""+change+"\"]";
+        String created=mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote(ids,false,0)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.automatic").value(false)).andExpect(jsonPath("$.changes.length()").value(1))
+            .andExpect(jsonPath("$.changes[0].issueId").value(issue)).andReturn().getResponse().getContentAsString();
+        String note=JsonPath.read(created,"$.id");
+        long v=((Number)JsonPath.read(created,"$.version")).longValue();
+        mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andExpect(jsonPath("$.changes[0].id").value(change));
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote(ids,true,v)))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("CHANGE_TITLE_REQUIRED"));
+        String saved=mvc.perform(patch(base("/patch-notes/"+note+"/changes/"+change)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"팀에 전하는 로그인 개선\",\"version\":"+v+"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.changes[0].needsTitle").value(false)).andReturn().getResponse().getContentAsString();
+        long next=((Number)JsonPath.read(saved,"$.version")).longValue();
+        assertThat(next).isGreaterThan(v);
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote(ids,false,v)))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("VERSION_CONFLICT"));
+        String published=mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote(ids,true,next)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PUBLISHED")).andReturn().getResponse().getContentAsString();
+        long publishedVersion=((Number)JsonPath.read(published,"$.version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote("[]",false,publishedVersion)))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("NOTE_PUBLISHED"));
+        mvc.perform(patch(base("/patch-notes/"+note+"/changes/"+change)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"수정\",\"version\":"+publishedVersion+"}"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("NOTE_PUBLISHED"));
+        String source=mvc.perform(get(base("/patch-notes/"+weeklyId)).with(as(owner)))
+            .andExpect(jsonPath("$.changes.length()").value(1)).andExpect(jsonPath("$.changes[0].title").value("로그인 개선"))
+            .andExpect(jsonPath("$.changes[0].needsTitle").value(true)).andReturn().getResponse().getContentAsString();
+        long sourceVersion=((Number)JsonPath.read(source,"$.version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+weeklyId+"/changes/"+change)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"주간 업데이트의 다른 제목\",\"version\":"+sourceVersion+"}"))
+            .andExpect(status().isOk());
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andExpect(jsonPath("$.changes[0].title").value("팀에 전하는 로그인 개선"));
+    }
+    @Test void manualUpdateCanUnlinkAndRejectsForeignReopenedInvalidOrUnauthorizedSources() throws Exception {
+        String issue=createId();update(issue,version(issue),details(null).replace("TODO","DONE"),"CLOSED").andExpect(status().isOk());
+        String change=JsonPath.read(mvc.perform(get(base("/patch-note-changes")).with(as(owner))).andReturn().getResponse().getContentAsString(),"$.items[0].id");
+        String input=manualNote("[\""+change+"\"]",false,0);
+        var viewer=member(ProjectMember.Role.VIEWER);
+        mvc.perform(get(base("/patch-note-changes")).with(as(viewer))).andExpect(status().isOk());
+        mvc.perform(get(base("/patch-note-changes")).param("search","%").with(as(owner))).andExpect(jsonPath("$.items.length()").value(0));
+        mvc.perform(post(base("/patch-notes")).with(as(viewer)).with(csrf()).contentType("application/json").content(input)).andExpect(status().isForbidden());
+        mvc.perform(post(base("/patch-notes")).with(as(owner)).contentType("application/json").content(input)).andExpect(status().isForbidden());
+        mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote("[null]",false,0))).andExpect(status().isBadRequest());
+        String foreign=JsonPath.read(mvc.perform(post("/api/projects").with(as(owner)).with(csrf()).contentType("application/json").content("{\"name\":\"다른 프로젝트\"}"))
+            .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(),"$.id");
+        mvc.perform(post("/api/projects/"+foreign+"/patch-notes").with(as(owner)).with(csrf()).contentType("application/json").content(input)).andExpect(status().isNotFound());
+        String created=mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json").content(input))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String note=JsonPath.read(created,"$.id");long v=((Number)JsonPath.read(created,"$.version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote("[]",false,v)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.changes.length()").value(0));
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json").content(manualNote("[]",false,v)))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("VERSION_CONFLICT"));
+        update(issue,version(issue),details(null),"OPEN").andExpect(status().isOk());
+        mvc.perform(get(base("/patch-note-changes")).with(as(owner))).andExpect(jsonPath("$.items.length()").value(0));
+        mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json").content(input))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("WORK_NOT_COMPLETED"));
+        mvc.perform(get(base("/patch-note-changes?page=0")).with(as(owner))).andExpect(status().isBadRequest());
+    }
     @Test void savesLocallyBeforePublishingAndReplayDoesNotDuplicate() throws Exception {
         String key=UUID.randomUUID().toString();String id=JsonPath.read(create(key,null).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.publishStatus").value("LOCAL")).andExpect(jsonPath("$.number").isEmpty())

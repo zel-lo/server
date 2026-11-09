@@ -5,6 +5,7 @@ import com.zello.zello.domain.activity.Activity;
 import com.zello.zello.domain.notification.Notification;
 import com.zello.zello.domain.patchnote.PatchNote;
 import com.zello.zello.domain.patchnote.WorkChange;
+import com.zello.zello.domain.patchnote.PatchNoteChangeLink;
 import com.zello.zello.domain.user.User;
 import com.zello.zello.domain.common.EntitySupport;
 import com.zello.zello.project.ProjectService;
@@ -82,23 +83,47 @@ public class WorkspaceService {
     }
     public record NoteView(String id,String title,String summary,String status,long version,String author,LocalDateTime publishedAt,LocalDateTime createdAt,boolean automatic,List<ChangeView> changes) { }
     public record ChangeView(String id,String issueId,String pullRequestId,String title,String summary,String category,String status,LocalDateTime occurredAt,boolean needsTitle) { }
+    private ChangeView change(WorkChange c) {
+        return new ChangeView(id(c.getId()),id(c.getIssueId()),id(c.getPullRequestId()),c.getTitle(),c.getSummary(),c.getCategory(),c.getStatus(),c.getOccurredAt(),!c.isTitleWritten());
+    }
+    public Page<ChangeView> changeOptions(long project,long user,int page,String search) {
+        projects.requireMember(project,user,false);
+        String term=Objects.requireNonNullElse(search,"").strip().toLowerCase(Locale.ROOT);
+        // Escape LIKE metacharacters: searching for a literal % or _ must not match every record.
+        term=term.replace("!","!!").replace("%","!%").replace("_","!_");
+        var rows=em.createQuery("select c from WorkChange c join c.repository r where c.projectId=:p and c.status in ('COMPLETED','MERGED') and r.connectionStatus <> com.zello.zello.domain.repository.GitRepository.ConnectionStatus.DISCONNECTED and lower(c.title) like :q escape '!' order by c.occurredAt desc,c.id desc",WorkChange.class)
+                .setParameter("p",project).setParameter("q","%"+term+"%").setFirstResult(offset(page)).setMaxResults(31).getResultList();
+        return page(rows.stream().map(this::change).toList(),page);
+    }
+    private List<PatchNoteChangeLink> links(long note) {
+        return em.createQuery("select l from PatchNoteChangeLink l join fetch l.workChange where l.patchNoteId=:n order by l.workChange.occurredAt,l.workChangeId",PatchNoteChangeLink.class).setParameter("n",note).getResultList();
+    }
+    private boolean automatic(PatchNote note) { return note.getVersionLabel()!=null && note.getVersionLabel().startsWith("auto-work:"); }
     private NoteView note(PatchNote n) {
         var rows=em.createQuery("select c from WorkChange c where c.projectId=:p and c.patchNoteId=:n order by c.occurredAt,c.id",WorkChange.class).setParameter("p",n.getProjectId()).setParameter("n",n.getId()).getResultList();
-        return new NoteView(id(n.getId()),n.getTitle(),n.getSummary(),n.getStatus().name(),n.getVersion(),n.getAuthorUser().getGithubAccount().getLogin(),n.getPublishedAt(),n.getCreatedAt(),n.getVersionLabel()!=null && n.getVersionLabel().startsWith("auto-work:"),
-                rows.stream().map(c->new ChangeView(id(c.getId()),id(c.getIssueId()),id(c.getPullRequestId()),c.getTitle(),c.getSummary(),c.getCategory(),c.getStatus(),c.getOccurredAt(),!c.isTitleWritten())).toList());
+        var included=new ArrayList<>(rows.stream().map(this::change).toList());
+        for(var link:links(n.getId())) {
+            var c=link.getWorkChange();
+            included.add(new ChangeView(id(c.getId()),id(c.getIssueId()),id(c.getPullRequestId()),link.getTitle(),link.getSummary(),link.getCategory(),link.getStatus(),c.getOccurredAt(),!link.isTitleWritten()));
+        }
+        return new NoteView(id(n.getId()),n.getTitle(),n.getSummary(),n.getStatus().name(),n.getVersion(),n.getAuthorUser().getGithubAccount().getLogin(),n.getPublishedAt(),n.getCreatedAt(),automatic(n),included);
     }
     @Transactional
     public NoteView writeChangeTitle(long project,long user,long noteId,long changeId,String title,long version) {
         em.find(com.zello.zello.domain.project.Project.class,project,jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
         projects.requireWriter(project,user);
-        var entry=em.find(WorkChange.class,changeId);
-        if(entry==null || entry.getProjectId()!=project || entry.getPatchNoteId()!=noteId)
-            throw new ApiException(404,"CHANGE_NOT_FOUND","반영 사항을 찾을 수 없어요.");
         var n=em.find(PatchNote.class,noteId);
+        if(n==null || n.getProjectId()!=project) throw new ApiException(404,"NOTE_NOT_FOUND","패치노트를 찾을 수 없어요.");
+        var entry=em.find(WorkChange.class,changeId);
+        var link=links(noteId).stream().filter(l->l.getWorkChangeId()==changeId).findFirst().orElse(null);
+        if(entry==null || entry.getProjectId()!=project || (entry.getPatchNoteId()!=noteId && link==null))
+            throw new ApiException(404,"CHANGE_NOT_FOUND","반영 사항을 찾을 수 없어요.");
         if(!Objects.equals(n.getVersion(),version)) throw new ApiException(409,"VERSION_CONFLICT","다른 팀원이 수정했어요. 최신 내용을 확인해 주세요.");
-        if(!List.of("COMPLETED","MERGED").contains(entry.getStatus()))
+        if(n.getStatus()==PatchNote.Status.PUBLISHED) throw new ApiException(409,"NOTE_PUBLISHED","공개한 패치노트의 반영 사항은 변경할 수 없어요.");
+        if(!List.of("COMPLETED","MERGED").contains(link==null ? entry.getStatus() : link.getStatus()))
             throw new ApiException(409,"WORK_NOT_COMPLETED","완료된 작업의 반영 사항을 작성해 주세요.");
-        changes.writeTitle(entry,title);
+        if(link==null) changes.writeTitle(entry,title);
+        else { link.writeTitle(title); em.lock(n,jakarta.persistence.LockModeType.PESSIMISTIC_FORCE_INCREMENT); }
         em.flush();
         return note(n);
     }
@@ -108,7 +133,7 @@ public class WorkspaceService {
         return page(rows.stream().map(this::note).toList(),page);
     }
     @Transactional
-    public NoteView saveNote(long project,long user,Long noteId,String title,String summary,Long version,boolean publish) {
+    public NoteView saveNote(long project,long user,Long noteId,String title,String summary,Long version,boolean publish,List<Long> changeIds) {
         em.find(com.zello.zello.domain.project.Project.class,project,jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
         var p=projects.requireWriter(project,user);
         PatchNote n;
@@ -119,16 +144,36 @@ public class WorkspaceService {
             if(!Objects.equals(n.getVersion(),version)) throw new ApiException(409,"VERSION_CONFLICT","다른 팀원이 수정했어요. 최신 내용을 확인해 주세요.");
             n.edit(title.strip(),summary);
         }
-        if(publish && n.getStatus()!=PatchNote.Status.PUBLISHED && n.getVersionLabel()!=null && n.getVersionLabel().startsWith("auto-work:")) {
-            long included=em.createQuery("select count(c) from WorkChange c where c.patchNoteId=:n and c.status in ('COMPLETED','MERGED')",Long.class).setParameter("n",n.getId()).getSingleResult();
-            if(included==0) throw new ApiException(409,"NO_COMPLETED_CHANGES","공개할 완료 작업이 없어요. 작업 상태를 다시 확인해 주세요.");
-            long missing=em.createQuery("select count(c) from WorkChange c where c.patchNoteId=:n and c.status in ('COMPLETED','MERGED') and c.titleWritten=false",Long.class).setParameter("n",n.getId()).getSingleResult();
-            if(missing>0) throw new ApiException(409,"CHANGE_TITLE_REQUIRED","반영 사항 작성 필요: 패치노트에 포함할 제목을 먼저 작성해 주세요.");
+        if(changeIds!=null) replaceLinks(project,n,changeIds);
+        if(publish && n.getStatus()!=PatchNote.Status.PUBLISHED) {
+            var included=note(n).changes();
+            var completed=included.stream().filter(c->List.of("COMPLETED","MERGED").contains(c.status())).toList();
+            if((automatic(n) || !included.isEmpty()) && completed.isEmpty()) throw new ApiException(409,"NO_COMPLETED_CHANGES","공개할 완료 작업이 없어요. 작업 상태를 다시 확인해 주세요.");
+            if(completed.stream().anyMatch(ChangeView::needsTitle)) throw new ApiException(409,"CHANGE_TITLE_REQUIRED","반영 사항 작성 필요: 패치노트에 포함할 제목을 먼저 작성해 주세요.");
         }
         boolean firstPublication=publish && n.getStatus()!=PatchNote.Status.PUBLISHED;
         if(firstPublication) n.publish(EntitySupport.now());
         em.flush();
         if(firstPublication) em.persist(Activity.builder().project(p).actorAccount(em.find(User.class,user).getGithubAccount()).patchNote(n).eventKey("patch-note-published:"+n.getId()).eventType("PATCH_NOTE_PUBLISHED").title(n.getTitle()).summary(n.getSummary()).occurredAt(EntitySupport.now()).build());
         return note(n);
+    }
+    private void replaceLinks(long project,PatchNote note,List<Long> changeIds) {
+        if(automatic(note)) throw new ApiException(409,"AUTOMATIC_NOTE_CHANGES","주간 업데이트의 변경 사항은 자동으로 모아요.");
+        var desired=new LinkedHashSet<>(changeIds);
+        var existing=links(note.getId());
+        var current=existing.stream().map(PatchNoteChangeLink::getWorkChangeId).collect(java.util.stream.Collectors.toSet());
+        if(current.equals(desired)) return;
+        if(note.getStatus()==PatchNote.Status.PUBLISHED) throw new ApiException(409,"NOTE_PUBLISHED","공개한 패치노트의 연결은 변경할 수 없어요.");
+        for(long changeId:desired) {
+            if(current.contains(changeId)) continue;
+            var c=em.find(WorkChange.class,changeId);
+            if(c==null || c.getProjectId()!=project || c.getRepository().getConnectionStatus()==com.zello.zello.domain.repository.GitRepository.ConnectionStatus.DISCONNECTED)
+                throw new ApiException(404,"CHANGE_NOT_FOUND","연결할 변경 사항을 찾을 수 없어요.");
+            if(!List.of("COMPLETED","MERGED").contains(c.getStatus())) throw new ApiException(409,"WORK_NOT_COMPLETED","완료된 작업이나 병합된 PR을 선택해 주세요.");
+            em.persist(new PatchNoteChangeLink(note,c));
+        }
+        existing.stream().filter(l->!desired.contains(l.getWorkChangeId())).forEach(em::remove);
+        // Link-only edits must also invalidate stale editors.
+        em.lock(note,jakarta.persistence.LockModeType.PESSIMISTIC_FORCE_INCREMENT);
     }
 }

@@ -13,12 +13,21 @@
 | POST /notifications/read-all | 현재 프로젝트의 본인 알림 모두 읽음 |
 | GET /patch-notes | 패치노트 목록 |
 | GET /patch-notes/{id} | 패치노트 상세 |
-| POST /patch-notes | title, summary, publish로 작성 |
-| PATCH /patch-notes/{id} | title, summary, version, publish로 수정/공개 |
+| GET /patch-note-changes?page=1&search=제목 | 연결할 완료 작업·병합 PR 검색, 페이지당 30개 |
+| POST /patch-notes | title, summary, publish, 선택 사항 changeIds(최대 100개)로 작성 |
+| PATCH /patch-notes/{id} | title, summary, version, publish, 선택 사항 changeIds로 수정/공개 |
 | GET /sync-runs | 최근 수집 상태·범위·처리 개수·실패 사유 |
 | GET /repositories/{repositoryId}/operations | 현재 사용자의 GitHub 접근권한 재검증 후 Actions/Deployments 각각 최근 10개 조회 |
 
 패치노트는 VIEWER를 제외한 프로젝트 멤버가 작성·편집하며 버전 충돌은 409입니다. 최초 공개는 활동 이력에 한 번 기록합니다. 읽음 처리는 수신자와 프로젝트 ID를 모두 검사합니다. 페이지나 프로젝트를 바꾸면 클라이언트는 이전 요청을 취소합니다.
+
+### 직접 쓴 팀 업데이트의 변경 연결
+
+Flyway **V15__link_manual_update_changes.sql**은 `patch_note_change_links`를 추가합니다. `changeIds`는 `work_changes`의 ID 목록이며 생략하면 기존 연결을 유지하고 빈 배열이면 모두 해제합니다. 같은 프로젝트의 연결된 저장소에 속한 COMPLETED/MERGED 기록만 신규 연결할 수 있습니다. 중복 ID는 한 번만 연결하고, 공개한 글의 연결 변경과 자동 주간 초안의 수동 연결 변경은 409로 거절합니다. 작성 권한·CSRF·패치노트 version 검증을 그대로 적용하며 연결만 바뀌어도 version을 올립니다.
+
+주간 업데이트의 원본은 이동하지 않습니다. 수동 글은 연결 시점의 제목·설명·분류를 별도로 보관하며, 기존 반영 제목 API로 해당 글의 제목만 작성합니다. 원본을 재수집하거나 주간 제목을 편집해도 수동 글의 문구를 덮어쓰지 않습니다. 원본 작업의 다시 진행·보관 상태는 함께 표시합니다. 이미 수동 글에 연결한 병합 PR은 나중에 이슈와 연결되어 주간 원본이 CONSOLIDATED로 바뀌어도, 실제 PR이 병합 상태인 동안 수동 글에서는 MERGED로 유지합니다. 주간 업데이트의 중복 제거는 기존처럼 적용합니다. 수동 글도 완료·병합 항목의 반영 제목을 채워야 공개할 수 있습니다. 커밋 SHA 단위의 조회·연결은 포함하지 않습니다.
+
+클라이언트는 본문 편집기의 기준 버전과 별도 항목 제목 저장에 사용한 버전을 대조합니다. 서로 다르면 본문 기준 버전을 자동으로 올리지 않고 초안을 유지한 채 최신 내용을 확인합니다. 서로 다른 필드의 변경과 연결 추가·해제는 함께 반영하고, 같은 제목·본문을 서로 다르게 편집했으면 사용자가 사용할 내용을 선택한 뒤 최신 버전으로 편집을 이어갑니다. 그 사이 다시 수정되면 서버의 409 검증을 다시 적용합니다.
 
 빌드와 배포는 별개의 GitHub API를 사용하며 빌드 성공에서 배포 성공을 추론하지 않습니다. 각 조회의 실패를 별도로 반환하고 배포 상태를 조회할 수 없으면 unknown으로 표시합니다. 외부 CI가 GitHub Deployments에 기록하지 않은 배포는 조회할 수 없습니다. GitHub에 쓰는 작업이나 자동 배포는 하지 않습니다.
 
