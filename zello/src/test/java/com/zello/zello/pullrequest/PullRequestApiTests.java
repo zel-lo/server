@@ -741,6 +741,59 @@ class PullRequestApiTests {
             .andExpect(jsonPath("$.items[0].changes[?(@.status == 'MERGED')].needsTitle").value(org.hamcrest.Matchers.contains(false)))
             .andExpect(jsonPath("$.items[0].changes[?(@.status == 'CONSOLIDATED')]").value(org.hamcrest.Matchers.hasSize(1)));
     }
+    @Test void manualUpdatesCanLinkMergedPullsFromPublishedWeeklyNotes() throws Exception {
+        stubFetch(fetched(1,1,ownerGithubId,"closed",false,Instant.parse("2026-10-31T01:00:00Z"),PullRequest.ReviewDecision.APPROVED),
+            fetched(2,2,ownerGithubId,"closed",false,null,PullRequest.ReviewDecision.PENDING),
+            fetched(3,3,ownerGithubId,"open",false,null,PullRequest.ReviewDecision.PENDING));
+        sync().andExpect(status().isOk());
+        String options=mvc.perform(get(base("/patch-note-changes")).with(as(owner))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(1)).andExpect(jsonPath("$.items[0].status").value("MERGED"))
+            .andExpect(jsonPath("$.items[0].pullRequestId").value(idOf(1))).andReturn().getResponse().getContentAsString();
+        String change=JsonPath.read(options,"$.items[0].id");
+        String weekly=notes().andReturn().getResponse().getContentAsString();
+        String note=JsonPath.read(weekly,"$.items[0].id");
+        long v=((Number)JsonPath.read(weekly,"$.items[0].version")).longValue();
+        String titled=mvc.perform(patch(base("/patch-notes/"+note+"/changes/"+change)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"팀에 소개할 PR\",\"version\":"+v+"}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long next=((Number)JsonPath.read(titled,"$.version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"주간 소식\",\"summary\":\"소개\",\"publish\":true,\"version\":"+next+"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PUBLISHED"));
+        mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"출시 소식\",\"summary\":\"함께 소개할 변경\",\"publish\":true,\"changeIds\":[\""+change+"\"]}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PUBLISHED")).andExpect(jsonPath("$.automatic").value(false))
+            .andExpect(jsonPath("$.changes[0].pullRequestId").value(idOf(1))).andExpect(jsonPath("$.changes[0].title").value("팀에 소개할 PR"));
+        mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andExpect(jsonPath("$.changes.length()").value(1));
+    }
+    @Test void manualPrLinksRemainVisibleEditableAndPublishableAfterIssueConsolidation() throws Exception {
+        stubFetch(fetched(1,1,ownerGithubId,"closed",false,Instant.parse("2026-10-31T01:00:00Z"),PullRequest.ReviewDecision.APPROVED));
+        sync().andExpect(status().isOk());
+        String options=mvc.perform(get(base("/patch-note-changes")).with(as(owner))).andReturn().getResponse().getContentAsString();
+        String change=JsonPath.read(options,"$.items[0].id");
+        String created=mvc.perform(post(base("/patch-notes")).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"출시 소식\",\"summary\":\"소개\",\"publish\":false,\"changeIds\":[\""+change+"\"]}"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String note=JsonPath.read(created,"$.id");long version=((Number)JsonPath.read(created,"$.version")).longValue();
+        var issue=localIssue();linkIssue(issue.id(),idOf(1),issueVersion(issue.id()),true).andExpect(status().isOk());
+        mvc.perform(get(base("/patch-notes/"+note)).with(as(owner)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.changes.length()").value(1))
+            .andExpect(jsonPath("$.changes[0].status").value("MERGED"))
+            .andExpect(jsonPath("$.changes[0].pullRequestId").value(idOf(1)));
+        String titled=mvc.perform(patch(base("/patch-notes/"+note+"/changes/"+change)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"팀에 소개할 병합 PR\",\"version\":"+version+"}"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long next=((Number)JsonPath.read(titled,"$.version")).longValue();
+        mvc.perform(patch(base("/patch-notes/"+note)).with(as(owner)).with(csrf()).contentType("application/json")
+            .content("{\"title\":\"출시 소식\",\"summary\":\"소개\",\"publish\":true,\"version\":"+next+",\"changeIds\":[\""+change+"\"]}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PUBLISHED"))
+            .andExpect(jsonPath("$.changes[0].title").value("팀에 소개할 병합 PR"));
+        mvc.perform(post(base("/patch-notes/collect")).with(as(owner)).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(get(base("/patch-notes/"+note)).with(as(owner))).andExpect(jsonPath("$.changes[0].status").value("MERGED"))
+            .andExpect(jsonPath("$.changes[0].title").value("팀에 소개할 병합 PR"));
+        // Weekly notes retain their existing deduplication rule.
+        notes().andExpect(jsonPath("$.items[?(@.automatic == true)].changes[?(@.status == 'CONSOLIDATED')]")
+            .value(org.hamcrest.Matchers.hasSize(1)));
+    }
     private ResultActions notes() throws Exception { return mvc.perform(get(base("/patch-notes")).with(as(owner))).andExpect(status().isOk()); }
 
     @Test void weeklyDashboardSeparatesReviewAgeReviewAssignmentsAndCanonicalCompletions() throws Exception {

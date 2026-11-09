@@ -10,7 +10,7 @@ import lombok.NoArgsConstructor;
 /** One canonical change per issue, or per merged PR when no issue is linked. */
 @Getter
 @Entity
-@Table(name = "work_changes", uniqueConstraints = @UniqueConstraint(name = "uk_work_changes_source", columnNames = {"project_id", "source_key"}),
+@Table(name = "work_changes", uniqueConstraints = {@UniqueConstraint(name = "uk_work_changes_source", columnNames = {"project_id", "source_key"}), @UniqueConstraint(name = "uk_work_changes_scope", columnNames = {"id", "project_id"})},
         indexes = @Index(name = "idx_work_changes_note", columnList = "patch_note_id, id"), check = {
         @CheckConstraint(name = "ck_work_changes_target", constraint = "(issue_id IS NOT NULL AND pull_request_id IS NULL) OR (issue_id IS NULL AND pull_request_id IS NOT NULL)"),
         @CheckConstraint(name = "ck_work_changes_category", constraint = "category IN ('FEATURE', 'FIX', 'IMPROVE')"),
