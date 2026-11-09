@@ -24,4 +24,6 @@ public interface ProjectMemberRepository extends JpaRepository<ProjectMember, Pr
     org.springframework.data.domain.Page<ProjectMember> search(Long projectId, String query, org.springframework.data.domain.Pageable pageable);
 
     Optional<ProjectMember> findByIdAndLeftAtIsNull(ProjectMemberId id);
+
+    long countByIdProjectIdAndLeftAtIsNull(Long projectId);
 }

@@ -104,8 +104,9 @@ public class ProjectCollaborationController {
 
     @DeleteMapping("/projects/{projectId}/membership")
     ResponseEntity<Void> leave(@PathVariable long projectId, @RequestParam long version,
+            @RequestParam(defaultValue = "false") boolean archive,
             @AuthenticationPrincipal ZelloPrincipal actor) {
-        service.leave(projectId, actor.userId(), version);
+        service.leave(projectId, actor.userId(), version, archive);
         return ResponseEntity.noContent().build();
     }
 

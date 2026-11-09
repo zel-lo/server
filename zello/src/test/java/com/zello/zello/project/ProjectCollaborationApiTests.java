@@ -204,6 +204,62 @@ class ProjectCollaborationApiTests {
         accept(user("after-leave"), invitation.token()).andExpect(status().isGone());
     }
 
+    long soloProject() throws Exception {
+        return Long.parseLong(JsonPath.read(mvc.perform(post("/api/projects").with(as(owner)).with(csrf())
+                .contentType("application/json").content("{\"name\":\"혼자 남은 공간\"}"))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$.id"));
+    }
+
+    @Test void soleOwnerCanExplicitlyArchiveAndLeaveWithoutDeletingProjectHistory() throws Exception {
+        projectId = soloProject();
+        var invitation = create(owner, "MEMBER", 72, null);
+        long current = version(owner);
+        mvc.perform(get(base("/members")).with(as(owner))).andExpect(jsonPath("$.canLeave").value(true))
+                .andExpect(jsonPath("$.leaveArchivesProject").value(true));
+        mvc.perform(delete(base("/membership") + "?version=" + current).with(as(owner)).with(csrf()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PROJECT_ARCHIVE_CONFIRMATION_REQUIRED"));
+        mvc.perform(delete(base("/membership") + "?version=" + current + "&archive=true").with(as(owner)))
+                .andExpect(status().isForbidden());
+        mvc.perform(delete(base("/membership") + "?version=" + (current + 1) + "&archive=true").with(as(owner)).with(csrf()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MEMBERSHIP_CHANGED"));
+        assertThat(projects.findById(projectId).orElseThrow().getArchivedAt()).isNull();
+        mvc.perform(delete(base("/membership") + "?version=" + current + "&archive=true").with(as(owner)).with(csrf()))
+                .andExpect(status().isNoContent());
+        assertThat(projects.findById(projectId).orElseThrow().getArchivedAt()).isNotNull();
+        assertThat(members.findById(new ProjectMemberId(projectId, owner.userId())).orElseThrow().getLeftAt()).isNotNull();
+        assertThat(invitations.findById(invitation.id()).orElseThrow().getRevokedAt()).isNotNull();
+        mvc.perform(get(base("")).with(as(owner))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/projects").with(as(owner)))
+                .andExpect(jsonPath("$[?(@.id == '" + projectId + "')]").value(org.hamcrest.Matchers.hasSize(0)));
+        accept(user("after-archive"), invitation.token()).andExpect(status().isNotFound());
+        assertThat(activities.membershipHistory(projectId, org.springframework.data.domain.PageRequest.of(0, 100)).getContent())
+                .anyMatch(activity -> activity.getEventType().equals("PROJECT_ARCHIVED"));
+    }
+
+    @Test void ownerCannotArchiveSharedProjectEvenWhenSearchShowsOnlyThem() throws Exception {
+        mvc.perform(get(base("/members")).param("query", account(owner)).with(as(owner)))
+                .andExpect(jsonPath("$.total").value(1)).andExpect(jsonPath("$.canLeave").value(false))
+                .andExpect(jsonPath("$.leaveArchivesProject").value(false));
+        mvc.perform(delete(base("/membership") + "?version=" + version(owner) + "&archive=true").with(as(owner)).with(csrf()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("OWNER_TRANSFER_REQUIRED"));
+        mvc.perform(delete(base("/membership") + "?version=" + version(admin) + "&archive=true").with(as(admin)).with(csrf()))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("PROJECT_OWNER_REQUIRED"));
+        assertThat(members.active(projectId)).hasSize(4);
+        assertThat(projects.findById(projectId).orElseThrow().getArchivedAt()).isNull();
+    }
+
+    @Test void joiningAfterTheOwnerOpenedTheLeaveDialogPreventsArchival() throws Exception {
+        projectId = soloProject();
+        var invitation = create(owner, "MEMBER", 72, null);
+        long current = version(owner);
+        mvc.perform(get(base("/members")).with(as(owner))).andExpect(jsonPath("$.leaveArchivesProject").value(true));
+        accept(user("joined-before-leave"), invitation.token()).andExpect(status().isOk());
+        mvc.perform(delete(base("/membership") + "?version=" + current + "&archive=true").with(as(owner)).with(csrf()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("OWNER_TRANSFER_REQUIRED"));
+        assertThat(members.active(projectId)).hasSize(2);
+        assertThat(projects.findById(projectId).orElseThrow().getArchivedAt()).isNull();
+    }
+
     @Test void validatesInputQuotasAndDoesNotLeakAnotherProject() throws Exception {
         var outsider = user("outsider");
         mvc.perform(get(base("/members")).with(as(outsider))).andExpect(status().isNotFound());
